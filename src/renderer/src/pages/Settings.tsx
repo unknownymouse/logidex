@@ -624,6 +624,7 @@ function AntigravityTab({
                   toast('success', `Model cerita: ${id}`)
                 }}
                 onRefresh={() => void llmModels.refresh()}
+                allowCustom
                 placeholder="Pilih model cerita"
               />
             </div>
@@ -666,6 +667,7 @@ function AntigravityTab({
                   toast('success', `Model suara: ${id}`)
                 }}
                 onRefresh={() => void ttsModels.refresh()}
+                allowCustom
                 placeholder="Pilih model TTS"
               />
             </div>
@@ -708,6 +710,7 @@ function AntigravityTab({
                   toast('success', `Model gambar: ${id}`)
                 }}
                 onRefresh={() => void imageModels.refresh()}
+                allowCustom
                 placeholder="Pilih model gambar"
               />
             </div>
@@ -750,6 +753,7 @@ function AntigravityTab({
                   toast('success', `Model video: ${id}`)
                 }}
                 onRefresh={() => void videoModels.refresh()}
+                allowCustom
                 placeholder="Pilih model video"
               />
             </div>

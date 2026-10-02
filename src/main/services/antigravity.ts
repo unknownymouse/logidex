@@ -94,11 +94,59 @@ export function listVoices(): VoiceOption[] {
   }))
 }
 
-export function listModels(kind: 'text' | 'image' | 'video' | 'tts'): ModelOption[] {
-  if (kind === 'text') return ANTIGRAVITY_LLM_MODELS
+export async function listModels(kind: 'text' | 'image' | 'video' | 'tts'): Promise<ModelOption[]> {
   if (kind === 'image') return ANTIGRAVITY_IMAGE_MODELS
   if (kind === 'video') return ANTIGRAVITY_VIDEO_MODELS
-  return ANTIGRAVITY_TTS_MODELS
+
+  const curated = kind === 'text' ? ANTIGRAVITY_LLM_MODELS : ANTIGRAVITY_TTS_MODELS
+  const token = await getValidAccessToken()
+  if (!token) return curated
+
+  try {
+    const res = await fetch(`${GOOGLE_API_BASE}/v1beta/models?pageSize=200`, {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+    if (!res.ok) return curated
+    const json = (await res.json()) as any
+    const list: any[] = json?.models ?? []
+    const live: ModelOption[] = []
+
+    const NOT_TEXT = /embedding|imagen|image|veo|native-audio|live|aqa|transcribe|robotics|computer-use|lyria/i
+
+    for (const m of list) {
+      const id = (m.name ?? '').replace(/^models\//, '')
+      if (!id) continue
+      const methods: string[] = m.supportedGenerationMethods ?? []
+      if (!methods.includes('generateContent')) continue
+      const isTts = /tts/i.test(id)
+      if (kind === 'tts' ? !isTts : (isTts || NOT_TEXT.test(id))) continue
+
+      const matchCurated = curated.find((c) => c.id === id)
+      live.push({
+        id,
+        name: matchCurated?.name || m.displayName || id,
+        description: matchCurated?.description || m.description?.slice(0, 280),
+        family: 'Gemini',
+        tags: matchCurated?.tags || (kind === 'text' && id.startsWith('gemini') ? ['Google', 'JSON'] : ['Google'])
+      })
+    }
+
+    if (!live.length) return curated
+
+    for (const c of curated) {
+      if (!live.some((l) => l.id === c.id)) {
+        live.push(c)
+      }
+    }
+
+    return live.sort((a, b) => {
+      const ga = a.id.startsWith('gemini') ? 0 : 1
+      const gb = b.id.startsWith('gemini') ? 0 : 1
+      return ga - gb || b.id.localeCompare(a.id, 'en', { numeric: true })
+    })
+  } catch {
+    return curated
+  }
 }
 
 /**

@@ -2,21 +2,49 @@ import type { ModelOption } from './types'
 
 export const DEFAULT_ANTIGRAVITY_IMAGE_MODEL = 'imagen-3.0-generate-002'
 export const DEFAULT_ANTIGRAVITY_VIDEO_MODEL = 'veo-2.0-generate-001'
-export const DEFAULT_ANTIGRAVITY_TTS_MODEL = 'gemini-2.5-flash'
-export const DEFAULT_ANTIGRAVITY_LLM_MODEL = 'gemini-2.5-flash'
+export const DEFAULT_ANTIGRAVITY_TTS_MODEL = 'gemini-3.8-flash-tts'
+export const DEFAULT_ANTIGRAVITY_LLM_MODEL = 'gemini-3.8-flash'
 
 export const ANTIGRAVITY_LLM_MODELS: ModelOption[] = [
   {
+    id: 'gemini-3.8-flash',
+    name: 'Gemini 3.8 Flash',
+    description: 'Model Gemini 3.8 generasi terbaru, sangat cepat, cerdas, dan menghasilkan naskah cerita terstruktur rapi.',
+    family: 'Gemini',
+    tags: ['Google', 'Rekomendasi', 'JSON', 'Terbaru']
+  },
+  {
+    id: 'gemini-3.8-pro',
+    name: 'Gemini 3.8 Pro',
+    description: 'Model penalaran tertinggi Google Gemini 3.8 untuk alur naskah dramatis, kaya emosi, dan rencana visual mendalam.',
+    family: 'Gemini',
+    tags: ['Google', 'Pintar', 'JSON', 'Terbaru']
+  },
+  {
+    id: 'gemini-3.5-flash',
+    name: 'Gemini 3.5 Flash',
+    description: 'Model Gemini 3.5 seimbang, cepat dan hemat pemrosesan.',
+    family: 'Gemini',
+    tags: ['Google', 'JSON', 'Cepat']
+  },
+  {
+    id: 'gemini-3.5-pro',
+    name: 'Gemini 3.5 Pro',
+    description: 'Model Gemini 3.5 Pro dengan kemampuan analisis narasi tinggi.',
+    family: 'Gemini',
+    tags: ['Google', 'JSON', 'Pintar']
+  },
+  {
     id: 'gemini-2.5-flash',
     name: 'Gemini 2.5 Flash',
-    description: 'Model multimodal seimbang, sangat cepat dan menghasilkan naskah cerita terstruktur rapi.',
+    description: 'Model multimodal stabil dan cepat untuk penulisan skrip.',
     family: 'Gemini',
-    tags: ['Google', 'Rekomendasi', 'JSON', 'Cepat']
+    tags: ['Google', 'JSON', 'Cepat']
   },
   {
     id: 'gemini-2.5-pro',
     name: 'Gemini 2.5 Pro',
-    description: 'Penalaran cerita mendalam dan penulisan alur naskah yang lebih kaya dan dramatis.',
+    description: 'Penalaran cerita mendalam dan penulisan naskah yang terstruktur.',
     family: 'Gemini',
     tags: ['Google', 'JSON', 'Pintar']
   },
@@ -26,6 +54,27 @@ export const ANTIGRAVITY_LLM_MODELS: ModelOption[] = [
     description: 'Generasi naskah ultra-cepat dan efisien.',
     family: 'Gemini',
     tags: ['Google', 'JSON', 'Cepat']
+  },
+  {
+    id: 'gemini-2.0-flash-lite',
+    name: 'Gemini 2.0 Flash Lite',
+    description: 'Model ringan hemat kuota untuk respons cepat.',
+    family: 'Gemini',
+    tags: ['Google', 'JSON']
+  },
+  {
+    id: 'gemini-1.5-pro',
+    name: 'Gemini 1.5 Pro',
+    description: 'Model penalaran panjang klasik Google.',
+    family: 'Gemini',
+    tags: ['Google', 'JSON']
+  },
+  {
+    id: 'gemini-1.5-flash',
+    name: 'Gemini 1.5 Flash',
+    description: 'Model cepat serbaguna Gemini 1.5.',
+    family: 'Gemini',
+    tags: ['Google', 'JSON']
   }
 ]
 
@@ -33,14 +82,14 @@ export const ANTIGRAVITY_IMAGE_MODELS: ModelOption[] = [
   {
     id: 'imagen-3.0-generate-002',
     name: 'Imagen 3 · Standard',
-    description: 'Generasi gambar kualitas tinggi dengan detail tajam dan kepatuhan teks presisi.',
+    description: 'Generasi gambar kualitas tinggi dengan detail tajam dan kepatuhan prompt presisi.',
     family: 'Imagen',
-    tags: ['Google', 'Antigravity', 'HQ']
+    tags: ['Google', 'Antigravity', 'HQ', 'Rekomendasi']
   },
   {
     id: 'imagen-3.0-fast-generate-001',
     name: 'Imagen 3 · Fast',
-    description: 'Generasi gambar cepat dengan konsumsi kuota lebih efisien.',
+    description: 'Generasi gambar cepat dengan efisiensi maksimal.',
     family: 'Imagen',
     tags: ['Google', 'Cepat']
   }
@@ -52,7 +101,7 @@ export const ANTIGRAVITY_VIDEO_MODELS: ModelOption[] = [
     name: 'Veo 2 · Standard',
     description: 'Generasi video AI sinematik dengan gerak alami dan resolusi tinggi.',
     family: 'Veo',
-    tags: ['Google', 'Antigravity', 'Video']
+    tags: ['Google', 'Antigravity', 'Video', 'Rekomendasi']
   },
   {
     id: 'veo-2.0-fast-generate-001',
@@ -65,9 +114,30 @@ export const ANTIGRAVITY_VIDEO_MODELS: ModelOption[] = [
 
 export const ANTIGRAVITY_TTS_MODELS: ModelOption[] = [
   {
+    id: 'gemini-3.8-flash-tts',
+    name: 'Gemini 3.8 Flash TTS',
+    description: 'Narasi suara natural generasi terbaru Google Gemini 3.8 dengan intonasi dinamis.',
+    family: 'Gemini',
+    tags: ['TTS', 'Natural', 'Terbaru', 'Rekomendasi']
+  },
+  {
+    id: 'gemini-3.8-flash',
+    name: 'Gemini 3.8 Flash Audio',
+    description: 'Audio dan narasi suara generasi 3.8.',
+    family: 'Gemini',
+    tags: ['TTS', 'Multimodal']
+  },
+  {
+    id: 'gemini-3.5-flash-tts',
+    name: 'Gemini 3.5 Flash TTS',
+    description: 'Narasi suara natural Google Gemini 3.5.',
+    family: 'Gemini',
+    tags: ['TTS', 'Natural']
+  },
+  {
     id: 'gemini-2.5-flash',
     name: 'Gemini 2.5 Flash Audio',
-    description: 'Audio dan narasi suara natural generasi terbaru dari Google Gemini.',
+    description: 'Audio dan narasi suara natural Google Gemini 2.5.',
     family: 'Gemini',
     tags: ['TTS', 'Natural']
   },
