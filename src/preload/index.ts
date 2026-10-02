@@ -57,6 +57,7 @@ const api: StudioApi = {
     keys: call('settings:keys'),
     setKey: call('settings:setKey'),
     setCustom: call('settings:setCustom'),
+    setAntigravity: call('settings:setAntigravity'),
     clearKey: call('settings:clearKey'),
     revealKey: call('settings:revealKey'),
     testKey: call('settings:testKey'),

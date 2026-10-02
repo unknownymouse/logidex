@@ -53,6 +53,7 @@ import * as eleven from './services/elevenlabs'
 import * as gemini from './services/gemini'
 import * as hf from './services/higgsfield'
 import * as llm from './services/llm'
+import * as antigravity from './services/antigravity'
 import { generateScript, generateVisuals, generateMusicPrompt } from './story'
 
 
@@ -72,11 +73,12 @@ function handle(channel: string, fn: Handler): void {
 async function testProvider(provider: ApiProvider, key?: string): Promise<KeyTestResult> {
   if (provider === 'higgsfield') return hf.testCredentials(key)
   if (provider === 'elevenlabs') return eleven.testKey(key)
+  if (provider === 'antigravity') return antigravity.testKey(key)
   return llm.testLlm(provider, key)
 }
 
 function defaultExportFolder(): string {
-  return getSettings().exportFolder ?? join(app.getPath('videos'), 'Bang Story')
+  return getSettings().exportFolder ?? join(app.getPath('videos'), 'Logidex')
 }
 
 export function registerIpc(): void {
@@ -205,6 +207,19 @@ export function registerIpc(): void {
     recordCheck('custom', result.ok, result.message)
     return result
   })
+  handle('settings:setAntigravity', async (baseUrl: string, key?: string) => {
+    const url = baseUrl.trim().replace(/\/+$/, '')
+    if (!/^https?:\/\/[^\s]+$/i.test(url)) throw new Error('Alamat endpoint harus diawali http:// atau https://')
+    setSettings({ antigravityBaseUrl: url })
+    if (key !== undefined) {
+      if (key.trim()) setSecret('antigravity', key.trim())
+      else clearSecret('antigravity')
+    }
+    dropCache('models:antigravity')
+    const result = await antigravity.testKey(key?.trim() || undefined, url)
+    recordCheck('antigravity', result.ok, result.message)
+    return result
+  })
   handle('settings:clearKey', (provider: ApiProvider) => {
     clearSecret(provider)
     dropCache(`models:${provider}`)
@@ -220,6 +235,7 @@ export function registerIpc(): void {
   handle('settings:revealKey', (provider: ApiProvider) => revealSecret(provider))
   handle('settings:voices', async (provider: TtsProvider): Promise<VoiceOption[]> => {
     if (provider === 'gemini') return gemini.listVoices()
+    if (provider === 'antigravity') return antigravity.listVoices()
     return eleven.listVoices()
   })
 

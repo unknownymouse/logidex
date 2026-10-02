@@ -3,6 +3,7 @@ import { getSecret, PROVIDER_NAMES } from '../secrets'
 import { getSettings, readCache, writeCache } from '../settings'
 import * as eleven from './elevenlabs'
 import * as gemini from './gemini'
+import * as antigravity from './antigravity'
 import { readError } from './http'
 import { extractJson } from './json'
 
@@ -32,7 +33,7 @@ function compat(provider: CompatProvider, keyOverride?: string | null, baseOverr
   const key = keyOverride !== undefined ? keyOverride : getSecret(provider)
   if (provider === 'openrouter') {
     // App attribution; OpenRouter asks apps without a public URL to send the title header.
-    return { provider, base: 'https://openrouter.ai/api/v1', key, headers: { 'X-OpenRouter-Title': 'Bang Story', 'X-Title': 'Bang Story' } }
+    return { provider, base: 'https://openrouter.ai/api/v1', key, headers: { 'X-OpenRouter-Title': 'Logidex', 'X-Title': 'Logidex' } }
   }
   if (provider === 'groq') return { provider, base: 'https://api.groq.com/openai/v1', key, headers: {} }
   const base = (baseOverride ?? getSettings().customBaseUrl).trim().replace(/\/+$/, '')
@@ -167,6 +168,12 @@ async function fetchModels(source: ModelSource): Promise<ModelOption[]> {
       return groqModels()
     case 'custom':
       return customModels()
+    case 'antigravity-tts':
+      return antigravity.listModels('tts')
+    case 'antigravity-image':
+      return antigravity.listModels('image')
+    case 'antigravity-video':
+      return antigravity.listModels('video')
   }
 }
 

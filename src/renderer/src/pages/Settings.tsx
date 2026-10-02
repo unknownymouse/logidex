@@ -156,10 +156,12 @@ function KeyForm({
   const { toast } = useApp()
   const configured = !!status?.configured
   const isCustom = provider === 'custom'
+  const isAntigravity = provider === 'antigravity'
+  const hasUrl = isCustom || isAntigravity
   const preview = status?.preview ?? null
   const [editing, setEditing] = useState(!preview)
   const [key, setKey] = useState('')
-  const [url, setUrl] = useState(customUrl ?? '')
+  const [url, setUrl] = useState(customUrl ?? (isAntigravity ? 'http://127.0.0.1:8045' : ''))
   const [revealed, setRevealed] = useState<string | null>(null)
   const [showTyped, setShowTyped] = useState(false)
   const [busy, setBusy] = useState<'save' | 'test' | null>(null)
@@ -169,14 +171,17 @@ function KeyForm({
     setEditing(!preview)
     setKey('')
     setRevealed(null)
-  }, [preview])
+    if (customUrl) setUrl(customUrl)
+  }, [preview, customUrl])
 
   // The stored key is shown masked; the custom endpoint keeps an editable (optional) key field.
-  const showStored = !isCustom && !editing && !!preview
-  const urlChanged = isCustom && url.trim() !== (customUrl ?? '').trim()
-  const canSave = isCustom ? !!url.trim() && (urlChanged || !!key.trim() || !configured) : !showStored && !!key.trim()
+  const showStored = !hasUrl && !editing && !!preview
+  const urlChanged = hasUrl && url.trim() !== (customUrl ?? '').trim()
+  const canSave = hasUrl
+    ? !!url.trim() && (urlChanged || !!key.trim() || !configured || status?.lastOk === false)
+    : !showStored && !!key.trim()
   // A pasted key only counts once it is saved; Enter saves it too.
-  const unsaved = !isCustom && !showStored && !!key.trim() && busy !== 'save'
+  const unsaved = !hasUrl && !showStored && !!key.trim() && busy !== 'save'
   const onEnter = (e: React.KeyboardEvent<HTMLInputElement>): void => {
     if (e.key !== 'Enter' || !canSave || busy) return
     e.preventDefault()
@@ -186,7 +191,11 @@ function KeyForm({
   const save = async (): Promise<void> => {
     setBusy('save')
     try {
-      const r = isCustom ? await window.api.settings.setCustom(url, key) : await window.api.settings.setKey(provider, key)
+      const r = isCustom
+        ? await window.api.settings.setCustom(url, key)
+        : isAntigravity
+          ? await window.api.settings.setAntigravity(url, key.trim() || undefined)
+          : await window.api.settings.setKey(provider, key)
       toast(r.ok ? 'success' : 'error', `${name}: ${r.message}`)
       setKey('')
       setEditing(false)
@@ -221,33 +230,33 @@ function KeyForm({
 
   const clear = async (): Promise<void> => {
     const ok = await confirmDialog({
-      title: `Hapus ${isCustom ? 'endpoint' : 'kunci'} ${name}?`,
+      title: `Hapus ${hasUrl ? 'koneksi' : 'kunci'} ${name}?`,
       body: 'Data ini akan dihapus dari komputer ini. Kamu bisa menambahkannya lagi kapan saja.',
       confirm: 'Hapus',
       danger: true
     })
     if (!ok) return
     await window.api.settings.clearKey(provider)
-    setUrl('')
+    setUrl(isAntigravity ? 'http://127.0.0.1:8045' : '')
     onChanged()
   }
 
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-end gap-2">
-        {isCustom && (
-          <Field label="Alamat endpoint (base URL)" className="flex-[1.3]">
+        {hasUrl && (
+          <Field label={isAntigravity ? 'Alamat proxy (base URL)' : 'Alamat endpoint (base URL)'} className="flex-[1.3]">
             <input
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               onKeyDown={onEnter}
-              placeholder="http://localhost:11434/v1"
+              placeholder={isAntigravity ? 'http://127.0.0.1:8045' : 'http://localhost:11434/v1'}
               spellCheck={false}
               className={cx(inputCls, 'h-11 font-mono text-sm')}
             />
           </Field>
         )}
-        <Field label={isCustom ? 'API key (opsional)' : label} className="flex-1">
+        <Field label={hasUrl ? (isAntigravity ? 'API key / token (opsional)' : 'API key (opsional)') : label} className="flex-1">
           <div className="relative">
             {showStored ? (
               <input
@@ -261,12 +270,18 @@ function KeyForm({
                 type={showTyped ? 'text' : 'password'}
                 autoComplete="off"
                 spellCheck={false}
-                autoFocus={!isCustom && !!preview}
+                autoFocus={!hasUrl && !!preview}
                 value={key}
                 onChange={(e) => setKey(e.target.value)}
                 onKeyDown={onEnter}
                 placeholder={
-                  isCustom ? (preview ? `Tersimpan (${preview}) · isi untuk mengganti` : 'Kosongkan untuk server lokal') : placeholder
+                  hasUrl
+                    ? preview
+                      ? `Tersimpan (${preview}) · isi untuk mengganti`
+                      : isAntigravity
+                        ? 'Kosongkan jika proxy lokal tidak butuh kunci'
+                        : 'Kosongkan untuk server lokal'
+                    : placeholder
                 }
                 className={cx(inputCls, 'h-11 pr-11')}
               />
@@ -299,7 +314,7 @@ function KeyForm({
             Simpan dan tes
           </Button>
         )}
-        {!isCustom && editing && !!preview && (
+        {!hasUrl && editing && !!preview && (
           <Button
             variant="ghost"
             className="h-11"
@@ -449,7 +464,7 @@ function TtsSection({ settings, statusOf, onChanged, onSettings }: { settings: A
   const provider = settings.defaultTtsProvider
   const status = statusOf(provider)
   const ready = !!status?.configured && status.lastOk !== false
-  const models = useModels(provider === 'gemini' ? 'gemini-tts' : 'elevenlabs', ready)
+  const models = useModels(provider === 'gemini' ? 'gemini-tts' : provider === 'elevenlabs' ? 'elevenlabs' : 'antigravity-tts', ready)
   const options: ProviderOption<TtsProvider>[] = [
     {
       id: 'gemini',
@@ -464,9 +479,16 @@ function TtsSection({ settings, statusOf, onChanged, onSettings }: { settings: A
       note: 'Suara sangat natural dengan waktu kata yang presisi untuk caption karaoke.',
       logo: 'elevenlabs',
       status: statusOf('elevenlabs')
+    },
+    {
+      id: 'antigravity',
+      name: 'Antigravity TTS',
+      note: 'Suara narator Gemini melalui relay Antigravity Auth lokal.',
+      logo: 'antigravity',
+      status: statusOf('antigravity')
     }
   ]
-  const value = provider === 'gemini' ? settings.geminiTtsModel : settings.elevenModel
+  const value = provider === 'gemini' ? settings.geminiTtsModel : provider === 'elevenlabs' ? settings.elevenModel : settings.antigravityTtsModel
   return (
     <>
       <SectionTitle
@@ -478,12 +500,25 @@ function TtsSection({ settings, statusOf, onChanged, onSettings }: { settings: A
       <Card key={provider}>
         <KeyForm
           provider={provider}
-          name={provider === 'gemini' ? 'Google Gemini' : 'ElevenLabs'}
+          name={provider === 'gemini' ? 'Google Gemini' : provider === 'elevenlabs' ? 'ElevenLabs' : 'Antigravity'}
           status={status}
-          help={provider === 'gemini' ? 'Kunci Gemini dari Google AI Studio.' : 'Kunci API dari akun ElevenLabs.'}
-          hint={provider === 'gemini' && settings.llmProvider === 'gemini' ? 'Kunci ini dipakai bersama dengan penyusun cerita Gemini.' : undefined}
-          link={provider === 'gemini' ? 'https://aistudio.google.com/apikey' : 'https://elevenlabs.io/app/settings/api-keys'}
-          linkLabel={provider === 'gemini' ? 'Buat kunci di Google AI Studio' : 'Buat kunci di ElevenLabs'}
+          help={
+            provider === 'gemini'
+              ? 'Kunci Gemini dari Google AI Studio.'
+              : provider === 'elevenlabs'
+                ? 'Kunci API dari akun ElevenLabs.'
+                : 'Proxy lokal Antigravity Auth meneruskan suara narator Gemini.'
+          }
+          hint={
+            provider === 'gemini' && settings.llmProvider === 'gemini'
+              ? 'Kunci ini dipakai bersama dengan penyusun cerita Gemini.'
+              : provider === 'antigravity'
+                ? 'Proxy dan kunci ini juga dipakai untuk membuat gambar Imagen 3 dan video Veo 2.'
+                : undefined
+          }
+          link={provider === 'gemini' ? 'https://aistudio.google.com/apikey' : provider === 'elevenlabs' ? 'https://elevenlabs.io/app/settings/api-keys' : null}
+          linkLabel={provider === 'gemini' ? 'Buat kunci di Google AI Studio' : provider === 'elevenlabs' ? 'Buat kunci di ElevenLabs' : ''}
+          customUrl={provider === 'antigravity' ? settings.antigravityBaseUrl : undefined}
           onChanged={onChanged}
           onSaved={(r) => r.ok && void models.refresh()}
         />
@@ -496,7 +531,17 @@ function TtsSection({ settings, statusOf, onChanged, onSettings }: { settings: A
               loading={models.loading}
               error={models.error}
               fetchedAt={models.fetchedAt}
-              onChange={async (id) => onSettings(await window.api.settings.set(provider === 'gemini' ? { geminiTtsModel: id } : { elevenModel: id }))}
+              onChange={async (id) =>
+                onSettings(
+                  await window.api.settings.set(
+                    provider === 'gemini'
+                      ? { geminiTtsModel: id }
+                      : provider === 'elevenlabs'
+                        ? { elevenModel: id }
+                        : { antigravityTtsModel: id }
+                  )
+                )
+              }
               onRefresh={() => void models.refresh()}
             />
           </div>
@@ -509,7 +554,7 @@ function TtsSection({ settings, statusOf, onChanged, onSettings }: { settings: A
 function HiggsfieldSection({ status, onChanged }: { status?: KeyStatus; onChanged: () => void }) {
   return (
     <>
-      <SectionTitle icon={<ImageIcon className="size-5" />} title="Gambar dan video" sub="Higgsfield membuat gambar klip, lembar karakter, dan video AI." />
+      <SectionTitle icon={<ImageIcon className="size-5" />} title="Gambar dan video (Higgsfield)" sub="Higgsfield membuat gambar klip, lembar karakter, dan video AI." />
       <Card>
         <div className="flex items-center gap-3">
           <ProviderLogo id="higgsfield" />
@@ -543,6 +588,87 @@ function HiggsfieldSection({ status, onChanged }: { status?: KeyStatus; onChange
             di langkah <strong className="text-ink">Ide cerita</strong>, bagian Model AI.
           </span>
         </p>
+      </Card>
+    </>
+  )
+}
+
+function AntigravitySection({
+  settings,
+  status,
+  onChanged,
+  onSettings
+}: {
+  settings: AppSettings
+  status?: KeyStatus
+  onChanged: () => void
+  onSettings: (s: AppSettings) => void
+}) {
+  const ready = !!status?.configured && status.lastOk !== false
+  const imageModels = useModels('antigravity-image', ready)
+  const videoModels = useModels('antigravity-video', ready)
+
+  return (
+    <>
+      <SectionTitle
+        icon={<ProviderLogo id="antigravity" size={20} />}
+        title="Antigravity Auth (Gambar & Video AI)"
+        sub="Relay lokal untuk Imagen 3 (gambar klip) dan Veo 2 (video AI) serta Gemini TTS."
+      />
+      <Card>
+        <div className="flex items-center gap-3">
+          <ProviderLogo id="antigravity" />
+          <div className="flex flex-1 flex-col">
+            <span className="text-base font-bold">Antigravity Auth</span>
+            <span className="text-[13px] text-ink-2">Proxy lokal Google Cloud / Gemini AI (@cortexkit/antigravity-auth)</span>
+          </div>
+          <StatusBadge status={status} />
+        </div>
+        <KeyForm
+          provider="antigravity"
+          name="Antigravity Auth"
+          status={status}
+          customUrl={settings.antigravityBaseUrl || 'http://127.0.0.1:8045'}
+          help="Masukkan alamat proxy lokal Antigravity (bawaan: http://127.0.0.1:8045). Kunci atau token hanya diperlukan bila proxy kamu memintanya."
+          link={null}
+          linkLabel=""
+          onChanged={onChanged}
+          onSaved={async (r) => {
+            if (r.ok) {
+              onSettings(await window.api.settings.get())
+              void imageModels.refresh()
+              void videoModels.refresh()
+            }
+          }}
+        />
+        {ready && (
+          <div className="grid grid-cols-2 gap-4 border-t border-dashed border-line pt-4">
+            <div className="flex flex-col gap-1.5">
+              <span className="text-sm font-semibold">Model gambar Antigravity (Imagen)</span>
+              <ModelPicker
+                value={settings.antigravityImageModel}
+                models={imageModels.models}
+                loading={imageModels.loading}
+                error={imageModels.error}
+                fetchedAt={imageModels.fetchedAt}
+                onChange={async (id) => onSettings(await window.api.settings.set({ antigravityImageModel: id }))}
+                onRefresh={() => void imageModels.refresh()}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <span className="text-sm font-semibold">Model video Antigravity (Veo)</span>
+              <ModelPicker
+                value={settings.antigravityVideoModel}
+                models={videoModels.models}
+                loading={videoModels.loading}
+                error={videoModels.error}
+                fetchedAt={videoModels.fetchedAt}
+                onChange={async (id) => onSettings(await window.api.settings.set({ antigravityVideoModel: id }))}
+                onRefresh={() => void videoModels.refresh()}
+              />
+            </div>
+          </div>
+        )}
       </Card>
     </>
   )
@@ -611,13 +737,14 @@ export function Settings() {
                 <div>
                   <h1 className="font-display text-[34px] font-bold tracking-[-0.015em]">Layanan AI dan kunci</h1>
                   <p className="mt-2 max-w-[700px] text-[15px] text-ink-2">
-                    Bang Story memakai akun layanan milikmu sendiri. Kunci disimpan terenkripsi di komputer ini dan hanya dikirim langsung ke
+                    Logidex memakai akun layanan milikmu sendiri. Kunci disimpan terenkripsi di komputer ini dan hanya dikirim langsung ke
                     layanan yang bersangkutan.
                   </p>
                 </div>
                 <LlmSection settings={settings} statusOf={statusOf} onChanged={reload} onSettings={setSettings} />
                 <TtsSection settings={settings} statusOf={statusOf} onChanged={reload} onSettings={setSettings} />
                 <HiggsfieldSection status={statusOf('higgsfield')} onChanged={reload} />
+                <AntigravitySection settings={settings} status={statusOf('antigravity')} onChanged={reload} onSettings={setSettings} />
                 <WhisperSection settings={settings} onSettings={setSettings} />
               </>
             )}
@@ -629,6 +756,30 @@ export function Settings() {
                   <p className="mt-2 text-[15px] text-ink-2">Pilihan bawaan untuk proyek baru.</p>
                 </div>
                 <section className="flex flex-col gap-5 rounded-2xl border border-line bg-surface p-6">
+                  <div className="grid grid-cols-2 gap-4">
+                    <Field label="Penyedia gambar bawaan">
+                      <Select
+                        label="Penyedia gambar bawaan"
+                        value={settings.defaultImageProvider}
+                        onChange={async (v) => setSettings(await window.api.settings.set({ defaultImageProvider: v }))}
+                        options={[
+                          { value: 'higgsfield', label: 'Higgsfield (GPT Image, Recraft, Soul)' },
+                          { value: 'antigravity', label: 'Antigravity (Imagen 3)' }
+                        ]}
+                      />
+                    </Field>
+                    <Field label="Penyedia video bawaan">
+                      <Select
+                        label="Penyedia video bawaan"
+                        value={settings.defaultVideoProvider}
+                        onChange={async (v) => setSettings(await window.api.settings.set({ defaultVideoProvider: v }))}
+                        options={[
+                          { value: 'higgsfield', label: 'Higgsfield (Kling, Seedance, Wan)' },
+                          { value: 'antigravity', label: 'Antigravity (Veo 2)' }
+                        ]}
+                      />
+                    </Field>
+                  </div>
                   <Field label="Bahasa default naskah dan suara">
                     <Select
                       label="Bahasa default naskah dan suara"

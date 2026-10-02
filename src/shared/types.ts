@@ -1,10 +1,12 @@
 export type ProjectStatus = 'draft' | 'script' | 'storyboard' | 'editing' | 'exported'
 export type AspectRatio = '16:9' | '9:16'
-export type TtsProvider = 'gemini' | 'elevenlabs'
+export type TtsProvider = 'gemini' | 'elevenlabs' | 'antigravity'
+export type ImageProvider = 'higgsfield' | 'antigravity'
+export type VideoProvider = 'higgsfield' | 'antigravity'
 export type LlmProvider = 'gemini' | 'openrouter' | 'groq' | 'custom'
-export type ApiProvider = 'higgsfield' | 'gemini' | 'elevenlabs' | 'openrouter' | 'groq' | 'custom'
+export type ApiProvider = 'higgsfield' | 'gemini' | 'elevenlabs' | 'openrouter' | 'groq' | 'custom' | 'antigravity'
 /** Where a live model list comes from: an LLM provider, or a TTS catalog. */
-export type ModelSource = LlmProvider | 'gemini-tts' | 'elevenlabs'
+export type ModelSource = LlmProvider | 'gemini-tts' | 'elevenlabs' | 'antigravity-tts' | 'antigravity-image' | 'antigravity-video'
 export type MotionType = 'camera' | 'video'
 export type CameraPresetId = 'zoomin' | 'zoomout' | 'panleft' | 'panright' | 'kenburns' | 'shake' | 'static'
 export type MotionStrength = 'halus' | 'sedang' | 'kuat'
@@ -102,7 +104,9 @@ export interface Project {
   styleId: string
   ttsProvider: TtsProvider
   ttsVoice: string
-  /** Higgsfield endpoint ids; null falls back to the app default. */
+  imageProvider?: ImageProvider
+  videoProvider?: VideoProvider
+  /** Higgsfield or Antigravity endpoint/model ids; null falls back to the app default. */
   imageModel: string | null
   videoModel: string | null
   /** One of the video model's resolutions, e.g. "720p"; null or unsupported uses the default (1080p when offered). */
@@ -249,6 +253,8 @@ export interface NewProjectInput {
   aspectRatio?: AspectRatio
   styleId?: string
   ttsProvider?: TtsProvider
+  imageProvider?: ImageProvider
+  videoProvider?: VideoProvider
 }
 
 export interface KeyStatus {
@@ -287,6 +293,13 @@ export interface AppSettings {
   customBaseUrl: string
   geminiTtsModel: string
   elevenModel: string
+  /** Antigravity local proxy or endpoint, e.g. http://127.0.0.1:8045 */
+  antigravityBaseUrl: string
+  antigravityTtsModel: string
+  antigravityImageModel: string
+  antigravityVideoModel: string
+  defaultImageProvider: ImageProvider
+  defaultVideoProvider: VideoProvider
   /** Higgsfield models for new projects: the last ones picked in the Idea step. */
   imageModel: string
   videoModel: string

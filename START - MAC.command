@@ -1,5 +1,5 @@
 #!/bin/bash
-# Bang Story - klik 2x file ini untuk membuka aplikasi di macOS.
+# Logidex - klik 2x file ini untuk membuka aplikasi di macOS.
 cd "$(dirname "$0")" || exit 1
 
 # Terminal yang dibuka lewat klik 2x kadang belum memuat PATH Homebrew atau nvm.
@@ -23,7 +23,7 @@ if [ ! -f "node_modules/.bangstory-mac" ]; then
     rm -rf node_modules
   fi
   echo
-  echo " Menyiapkan Bang Story untuk pertama kali."
+  echo " Menyiapkan Logidex untuk pertama kali."
   echo " Butuh koneksi internet dan beberapa menit, jangan tutup jendela ini..."
   echo
   if ! npm install; then
@@ -57,5 +57,5 @@ if [ ! -f "out/main/index.js" ]; then
 fi
 
 nohup ./node_modules/electron/dist/Electron.app/Contents/MacOS/Electron . >/dev/null 2>&1 &
-echo " Bang Story sedang dibuka. Jendela Terminal ini boleh ditutup."
+echo " Logidex sedang dibuka. Jendela Terminal ini boleh ditutup."
 exit 0

@@ -82,7 +82,7 @@ export function Home() {
 
   const ttsOptions = useMemo((): SelectOption<TtsProvider>[] => {
     const ready = ttsReadiness(keys)
-    return (['gemini', 'elevenlabs'] as const).map((p) => {
+    return (['gemini', 'elevenlabs', 'antigravity'] as const).map((p) => {
       const blocked = keys.length > 0 && !ready[p].ok
       return { value: p, label: TTS_NAMES[p], disabled: blocked, note: blocked ? `${ready[p].reason}. Atur di Pengaturan.` : undefined }
     })
@@ -96,13 +96,15 @@ export function Home() {
       return !!k?.configured && k.lastOk !== false
     }
     const issues: { what: string; blocks: string }[] = []
-    if (!ok('higgsfield')) issues.push({ what: 'kunci Higgsfield', blocks: 'gambar' })
+    if (!ok('higgsfield') && !ok('antigravity')) issues.push({ what: 'kunci Higgsfield atau Antigravity', blocks: 'gambar dan video' })
     const llm = appSettings.llmProvider
     if (!ok(llm)) issues.push({ what: `kunci ${llmName(llm)}`, blocks: 'cerita' })
     else if (!appSettings.llmModels[llm]) issues.push({ what: `model ${llmName(llm)}`, blocks: 'cerita' })
     // Narration needs just one working voice service; every project can pick either one.
     const tts = ttsReadiness(keys)
-    if (!tts.gemini.ok && !tts.elevenlabs.ok) issues.push({ what: 'kunci Gemini atau ElevenLabs', blocks: 'suara narator' })
+    if (!tts.gemini.ok && !tts.elevenlabs.ok && !tts.antigravity.ok) {
+      issues.push({ what: 'kunci Gemini, ElevenLabs, atau Antigravity', blocks: 'suara narator' })
+    }
     return issues
   }, [keys, appSettings])
 
@@ -115,7 +117,16 @@ export function Home() {
   const start = async (): Promise<void> => {
     setCreating(true)
     try {
-      const b = await window.api.projects.create({ synopsis, durationSec, language, aspectRatio, styleId, ttsProvider: tts })
+      const b = await window.api.projects.create({
+        synopsis,
+        durationSec,
+        language,
+        aspectRatio,
+        styleId,
+        ttsProvider: tts,
+        imageProvider: appSettings?.defaultImageProvider ?? 'higgsfield',
+        videoProvider: appSettings?.defaultVideoProvider ?? 'higgsfield'
+      })
       go({ name: 'project', id: b.project.id })
     } catch (e) {
       toast('error', errorText(e))

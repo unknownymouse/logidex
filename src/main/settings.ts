@@ -11,6 +11,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   customBaseUrl: '',
   geminiTtsModel: 'gemini-3.8-flash-tts',
   elevenModel: 'eleven_multilingual_v2',
+  antigravityBaseUrl: 'http://127.0.0.1:8045',
+  antigravityTtsModel: 'gemini-2.5-flash',
+  antigravityImageModel: 'imagen-3.0-generate-002',
+  antigravityVideoModel: 'veo-2.0-generate-001',
+  defaultImageProvider: 'higgsfield',
+  defaultVideoProvider: 'higgsfield',
   imageModel: DEFAULT_IMAGE_MODEL,
   videoModel: DEFAULT_VIDEO_MODEL,
   whisperAuto: true

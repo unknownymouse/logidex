@@ -16,14 +16,14 @@ export function AboutSection() {
     <section className="flex flex-col gap-5 rounded-2xl border border-line bg-surface p-6 text-[15px] leading-relaxed text-ink-2">
       <div className="flex items-end justify-between gap-4">
         <div className="flex flex-col">
-          <h1 className="font-display text-[34px] font-bold tracking-[-0.015em] text-ink">Bang Story</h1>
+          <h1 className="font-display text-[34px] font-bold tracking-[-0.015em] text-ink">Logidex</h1>
           <button
             type="button"
             onClick={() => open(CHANNEL_URL)}
             title="Buka channel YouTube Bang Tutorial"
             className="self-start text-sm font-medium text-muted underline-offset-2 hover:text-accent-dark hover:underline"
           >
-            by Bang Tutorial
+            AI Video Studio
           </button>
         </div>
         {version && <span className="rounded-full border border-line-2 px-3 py-1 font-mono text-xs text-ink">Versi {version}</span>}
@@ -32,13 +32,13 @@ export function AboutSection() {
       <div className="flex flex-col gap-2.5">
         <div className="flex flex-wrap items-baseline gap-x-2">
           <h2 className="text-base font-semibold text-ink">Tutorial</h2>
-          <span className="text-[13px] text-muted">Cara membuat video dari ide sampai ekspor dengan Bang Story</span>
+          <span className="text-[13px] text-muted">Cara membuat video dari ide sampai ekspor dengan Logidex</span>
         </div>
         {/* No autoplay: a play the viewer starts is what YouTube counts as a view. */}
         <div className="overflow-hidden rounded-xl border border-line-2 bg-ink">
           <iframe
             src={`https://www.youtube.com/embed/${TUTORIAL_ID}?rel=0&playsinline=1`}
-            title="Tutorial Bang Story"
+            title="Tutorial Logidex"
             className="block aspect-video w-full"
             allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
             allowFullScreen
@@ -57,7 +57,7 @@ export function AboutSection() {
 
       <p>Semua proyek, gambar, video, dan suara disimpan di komputer ini.</p>
       <p>
-        Kode Bang Story dirilis dengan lisensi MIT. Aplikasi ini juga menyertakan FFmpeg (lisensi GPL) untuk merender video, whisper.cpp (lisensi MIT) untuk
+        Kode Logidex dirilis dengan lisensi MIT. Aplikasi ini juga menyertakan FFmpeg (lisensi GPL) untuk merender video, whisper.cpp (lisensi MIT) untuk
         menyamakan caption dengan suara, dan font caption dari Google Fonts (SIL Open Font License dan Apache 2.0). Model Whisper Small (lisensi MIT) diunduh
         terpisah. File lisensinya ikut terpasang di folder aplikasi.
       </p>

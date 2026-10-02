@@ -79,6 +79,8 @@ export interface StudioApi {
     setKey(provider: ApiProvider, key: string): Promise<KeyTestResult>
     /** Saves an OpenAI-compatible endpoint; the key is optional for local servers. */
     setCustom(baseUrl: string, key: string): Promise<KeyTestResult>
+    /** Saves Antigravity proxy endpoint and optional key/token. */
+    setAntigravity(baseUrl: string, key?: string): Promise<KeyTestResult>
     clearKey(provider: ApiProvider): Promise<void>
     /** The full stored key, only for the "show key" button. */
     revealKey(provider: ApiProvider): Promise<string | null>

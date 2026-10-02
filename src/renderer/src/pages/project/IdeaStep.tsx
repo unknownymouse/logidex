@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Bot, Play, Sparkles, Square } from 'lucide-react'
+import { getAntigravityImageModel } from '@shared/antigravity'
 import { getImageModel } from '@shared/higgsfield'
 import { DURATIONS, LANGUAGES, clipCountFor, llmName } from '@shared/models'
 import { getStyle } from '@shared/styles'
@@ -44,8 +45,11 @@ function VoicePicker({ provider, value, onChange }: { provider: TtsProvider; val
     window.api.settings
       .voices(provider)
       .then((list) => {
-        // Gemini samples ship with the app; ElevenLabs sends its own preview links.
-        const v = provider === 'gemini' ? list.map((x) => ({ ...x, previewUrl: x.previewUrl ?? geminiPreview(x.id, x.name) })) : list
+        // Gemini and Antigravity samples ship with the app; ElevenLabs sends its own preview links.
+        const v =
+          provider === 'gemini' || provider === 'antigravity'
+            ? list.map((x) => ({ ...x, previewUrl: x.previewUrl ?? geminiPreview(x.id, x.name) }))
+            : list
         setVoices(v)
         if (!v.some((x) => x.id === value) && v[0]) onChange(v[0].id)
       })
@@ -91,8 +95,9 @@ function VoicePicker({ provider, value, onChange }: { provider: TtsProvider; val
         options={
           voices
             ? voices.map((v) =>
-                // Gemini tones are short; ElevenLabs labels are longer, so they go on a second line.
-                provider === 'gemini' ? { value: v.id, label: v.name, hint: v.description || undefined } : { value: v.id, label: v.name, note: v.description || undefined }
+                provider === 'gemini' || provider === 'antigravity'
+                  ? { value: v.id, label: v.name, hint: v.description || undefined }
+                  : { value: v.id, label: v.name, note: v.description || undefined }
               )
             : [{ value, label: 'Memuat daftar suara…' }]
         }
@@ -119,12 +124,12 @@ export function IdeaStep() {
   useEffect(() => {
     if (!project || !keys.length || hasVoice) return
     const use = usableTts(project.ttsProvider, keys)
-    if (use !== project.ttsProvider) updateProject({ ttsProvider: use, ttsVoice: use === 'gemini' ? 'Charon' : '' })
+    if (use !== project.ttsProvider) updateProject({ ttsProvider: use, ttsVoice: use === 'elevenlabs' ? '' : 'Charon' })
   }, [keys, project?.id])
 
   if (!project) return null
   const ready = ttsReadiness(keys)
-  const blocked = keys.length ? (['gemini', 'elevenlabs'] as const).filter((p) => !ready[p].ok) : []
+  const blocked = keys.length ? (['gemini', 'elevenlabs', 'antigravity'] as const).filter((p) => !ready[p].ok) : []
   const openSettings = async (): Promise<void> => {
     await flush()
     go({ name: 'settings', back: { name: 'project', id: project.id } })
@@ -132,7 +137,10 @@ export function IdeaStep() {
 
   const clipCount = clipCountFor(project.durationSec)
   const perClip = Math.round(project.durationSec / clipCount)
-  const model = getImageModel(project.imageModel)
+  const modelName =
+    project.imageProvider === 'antigravity'
+      ? getAntigravityImageModel(project.imageModel).name
+      : getImageModel(project.imageModel).name
 
   const compose = async (): Promise<void> => {
     if (!project.synopsis.trim()) {
@@ -256,8 +264,8 @@ export function IdeaStep() {
               <div className="flex items-center gap-2">
                 <Segmented
                   value={project.ttsProvider}
-                  onChange={(v) => updateProject({ ttsProvider: v, ttsVoice: v === 'gemini' ? 'Charon' : '' })}
-                  options={(['gemini', 'elevenlabs'] as const).map((p) => ({
+                  onChange={(v) => updateProject({ ttsProvider: v, ttsVoice: v === 'elevenlabs' ? '' : 'Charon' })}
+                  options={(['gemini', 'elevenlabs', 'antigravity'] as const).map((p) => ({
                     id: p,
                     label: TTS_NAMES[p],
                     disabled: blocked.includes(p),
@@ -268,8 +276,8 @@ export function IdeaStep() {
               </div>
               {blocked.length > 0 && (
                 <span className="text-[13px] text-muted">
-                  {blocked.length === 2
-                    ? 'Belum ada kunci suara narator yang valid, jadi suara belum bisa dibuat.'
+                  {blocked.length === 3
+                    ? 'Belum ada kunci atau koneksi suara narator yang valid, jadi suara belum bisa dibuat.'
                     : `${ready[blocked[0]].reason}, jadi ${TTS_NAMES[blocked[0]]} belum bisa dipilih.`}{' '}
                   <button type="button" onClick={() => void openSettings()} className="font-semibold text-accent-dark hover:underline">
                     Atur di Pengaturan
@@ -304,7 +312,7 @@ export function IdeaStep() {
       <footer className="absolute inset-x-0 bottom-0 flex h-[84px] items-center gap-4 border-t border-line bg-surface px-14">
         <div className="flex flex-col gap-0.5">
           <span className="text-[15px] font-semibold">
-            ± {clipCount} adegan · gambar {model.name}
+            ± {clipCount} adegan · gambar {modelName}
           </span>
           <span className="flex items-center gap-1.5 text-[13px] text-muted">
             <Bot className="size-3.5" />

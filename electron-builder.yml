@@ -1,5 +1,5 @@
-appId: id.bangtutorial.bangstory
-productName: Bang Story
+appId: com.logidex.app
+productName: Logidex
 directories:
   buildResources: build
   output: dist
@@ -24,10 +24,10 @@ win:
   target:
     - target: nsis
       arch: [x64]
-  artifactName: BangStory-Setup-${version}.${ext}
+  artifactName: Logidex-Setup-${version}.${ext}
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
-  shortcutName: Bang Story
+  shortcutName: Logidex
 npmRebuild: true

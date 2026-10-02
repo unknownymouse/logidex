@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { estimateWordTimings } from '@shared/captions'
 import { stripVoiceTags } from '@shared/speech'
@@ -33,6 +33,7 @@ import { probeDurationMs, probeSize } from './services/audio'
 import * as eleven from './services/elevenlabs'
 import * as gemini from './services/gemini'
 import * as hf from './services/higgsfield'
+import * as antigravity from './services/antigravity'
 import { downloadTo, sleep } from './services/http'
 
 const DAY = 24 * 60 * 60 * 1000
@@ -241,17 +242,53 @@ export function generateClipImage(clipId: string): Job {
   const existing = activeJobFor({ clipId }, 'image')
   if (existing) return existing
   const clip = getClip(clipId)
-  const job = insertJob({ projectId: clip.projectId, clipId, kind: 'image', provider: 'higgsfield' })
+  const project = getProject(clip.projectId)
+  const provider = project.imageProvider ?? 'higgsfield'
+  const job = insertJob({ projectId: clip.projectId, clipId, kind: 'image', provider })
+  if (provider === 'antigravity') {
+    emit.job(job)
+    return runJob(job, 'antigravity', async (ctx) => {
+      ctx.progress(0.1, 'Menyiapkan prompt gambar')
+      const fresh = getClip(clipId)
+      const p = getProject(fresh.projectId)
+      const chars = charactersOf(p.id).filter((c) => fresh.characterIds.includes(c.id))
+      const prompt = clipPrompt(p, fresh, chars, [], 1000)
+      ctx.progress(0.2, 'Membuat gambar di Antigravity')
+      const result = await antigravity.generateImage(prompt, p.aspectRatio, p.imageModel || undefined, ctx.signal)
+      ctx.progress(0.9, 'Menyimpan gambar')
+      const rel = saveFile(p.id, 'images', '.png', result.bytes)
+      const abs = assetAbsPath(p.id, rel)
+      const size = await probeSize(abs)
+      const asset = insertAsset({
+        projectId: p.id,
+        clipId: fresh.id,
+        kind: 'image',
+        provider: 'antigravity',
+        model: p.imageModel || getSettings().antigravityImageModel,
+        prompt,
+        localPath: rel,
+        width: size?.width ?? null,
+        height: size?.height ?? null
+      })
+      emit.asset(asset)
+      patchClip(fresh.id, { imageAssetId: asset.id })
+      emit.clip({ clipId: fresh.id, patch: { imageAssetId: asset.id } })
+      const first = clipsOf(p.id)[0]
+      if (!p.coverAssetId || first?.id === fresh.id) touchProject(p.id, { coverAssetId: asset.id })
+      touchProject(p.id)
+      return asset.id
+    })
+  }
   return startHiggsfield(job, async (ctx) => {
     const fresh = getClip(clipId)
-    const project = getProject(fresh.projectId)
-    const model = getImageModel(project.imageModel)
-    const chars = charactersOf(project.id).filter((c) => fresh.characterIds.includes(c.id))
+    const p = getProject(fresh.projectId)
+    const model = getImageModel(p.imageModel)
+    const chars = charactersOf(p.id).filter((c) => fresh.characterIds.includes(c.id))
     const refs = await referenceUrls(model, chars, ctx.signal)
-    const prompt = clipPrompt(project, fresh, chars, refs.names, promptLimit(model))
+    const prompt = clipPrompt(p, fresh, chars, refs.names, promptLimit(model))
     return {
       endpoint: model.id,
-      body: imageBody(model, prompt, project.aspectRatio, refs.urls),
+      body: imageBody(model, prompt, p.aspectRatio, refs.urls),
       payload: { target: 'clip-image', model: model.id, prompt }
     }
   })
@@ -261,11 +298,43 @@ export function generateCharacterSheet(characterId: string): Job {
   const existing = activeJobFor({ characterId }, 'sheet')
   if (existing) return existing
   const c = getCharacter(characterId)
-  const job = insertJob({ projectId: c.projectId, characterId, kind: 'sheet', provider: 'higgsfield' })
+  const project = getProject(c.projectId)
+  const provider = project.imageProvider ?? 'higgsfield'
+  const job = insertJob({ projectId: c.projectId, characterId, kind: 'sheet', provider })
+  if (provider === 'antigravity') {
+    emit.job(job)
+    return runJob(job, 'antigravity', async (ctx) => {
+      ctx.progress(0.1, 'Menyiapkan prompt lembar karakter')
+      const p = getProject(c.projectId)
+      const prompt = sheetPrompt(p, getCharacter(characterId))
+      ctx.progress(0.2, 'Membuat lembar karakter di Antigravity')
+      const result = await antigravity.generateImage(prompt, '16:9', p.imageModel || undefined, ctx.signal)
+      ctx.progress(0.9, 'Menyimpan lembar karakter')
+      const rel = saveFile(p.id, 'images', '.png', result.bytes)
+      const abs = assetAbsPath(p.id, rel)
+      const size = await probeSize(abs)
+      const asset = insertAsset({
+        projectId: p.id,
+        characterId,
+        kind: 'image',
+        provider: 'antigravity',
+        model: p.imageModel || getSettings().antigravityImageModel,
+        prompt,
+        localPath: rel,
+        width: size?.width ?? null,
+        height: size?.height ?? null
+      })
+      emit.asset(asset)
+      setCharacterSheet(characterId, asset.id)
+      emit.character({ characterId, patch: { sheetAssetId: asset.id } })
+      touchProject(p.id)
+      return asset.id
+    })
+  }
   return startHiggsfield(job, async () => {
-    const project = getProject(c.projectId)
-    const model = getImageModel(project.imageModel)
-    const prompt = sheetPrompt(project, getCharacter(characterId))
+    const p = getProject(c.projectId)
+    const model = getImageModel(p.imageModel)
+    const prompt = sheetPrompt(p, getCharacter(characterId))
     return {
       endpoint: model.id,
       body: imageBody(model, prompt, '16:9', []),
@@ -279,13 +348,61 @@ export function generateClipVideo(clipId: string): Job {
   if (existing) return existing
   const clip = getClip(clipId)
   if (!clip.imageAssetId) throw new Error('Buat gambar klip ini dulu sebelum membuat video AI.')
-  const job = insertJob({ projectId: clip.projectId, clipId, kind: 'video', provider: 'higgsfield' })
+  const project = getProject(clip.projectId)
+  const provider = project.videoProvider ?? 'higgsfield'
+  const job = insertJob({ projectId: clip.projectId, clipId, kind: 'video', provider })
+  if (provider === 'antigravity') {
+    emit.job(job)
+    return runJob(job, 'antigravity', async (ctx) => {
+      const fresh = getClip(clipId)
+      const image = getAsset(fresh.imageAssetId)
+      if (!image) throw new Error('Gambar klip tidak ditemukan')
+      const p = getProject(fresh.projectId)
+      ctx.progress(0.1, 'Membaca gambar klip')
+      const imageBuffer = readFileSync(assetAbsPath(p.id, image.localPath))
+      const prompt =
+        fresh.videoPrompt.trim() ||
+        `${splitAvoid(fresh.visualPrompt).scene.replace(/\.$/, '')}. Subtle natural cinematic motion. Keep the art style of the first frame.`
+      ctx.progress(0.2, 'Membuat video di Antigravity')
+      const result = await antigravity.generateVideo(
+        prompt,
+        imageBuffer,
+        p.aspectRatio,
+        Math.round(fresh.durationMs / 1000),
+        p.videoModel || undefined,
+        ctx.signal
+      )
+      ctx.progress(0.9, 'Menyimpan video')
+      const rel = saveFile(p.id, 'videos', '.mp4', result.bytes)
+      const abs = assetAbsPath(p.id, rel)
+      const size = await probeSize(abs)
+      const durationMs = await probeDurationMs(abs).catch(() => null)
+      const asset = insertAsset({
+        projectId: p.id,
+        clipId: fresh.id,
+        kind: 'video',
+        provider: 'antigravity',
+        model: p.videoModel || getSettings().antigravityVideoModel,
+        prompt,
+        localPath: rel,
+        durationMs,
+        width: size?.width ?? null,
+        height: size?.height ?? null
+      })
+      emit.asset(asset)
+      const patch = { videoAssetId: asset.id, motionType: 'video' as const, mediaInMs: 0 }
+      patchClip(fresh.id, patch)
+      emit.clip({ clipId: fresh.id, patch })
+      touchProject(p.id)
+      return asset.id
+    })
+  }
   return startHiggsfield(job, async (ctx) => {
     const fresh = getClip(clipId)
     const image = getAsset(fresh.imageAssetId)
     if (!image) throw new Error('Gambar klip tidak ditemukan')
-    const project = getProject(fresh.projectId)
-    const model = getVideoModel(project.videoModel)
+    const p = getProject(fresh.projectId)
+    const model = getVideoModel(p.videoModel)
     ctx.progress(0.05, 'Menyiapkan gambar awal')
     const url = await publicUrlFor(image, ctx.signal)
     let prompt =
@@ -295,7 +412,7 @@ export function generateClipVideo(clipId: string): Job {
       prompt = `Open on the exact scene of the reference image and keep its art style, characters and composition. ${prompt}`
     return {
       endpoint: model.id,
-      body: videoBody(model, prompt, url, fresh.durationMs / 1000, project.aspectRatio, project.videoResolution),
+      body: videoBody(model, prompt, url, fresh.durationMs / 1000, p.aspectRatio, p.videoResolution),
       payload: { target: 'clip-video', model: model.id, prompt }
     }
   })
@@ -317,12 +434,15 @@ export function generateClipTts(clipId: string): Job {
     let rel: string
     let words: WordTiming[] | undefined
     let estimated = false
-    const voice = p.ttsVoice || (p.ttsProvider === 'gemini' ? 'Charon' : '')
+    const voice = p.ttsVoice || 'Charon'
     if (p.ttsProvider === 'elevenlabs') {
       if (!voice) throw new Error('Pilih suara ElevenLabs dulu di langkah Ide cerita.')
       const out = await eleven.speak(text, voice, p.language, ctx.signal)
       rel = saveFile(p.id, 'audio', '.mp3', out.audio)
       words = out.words
+    } else if (p.ttsProvider === 'antigravity') {
+      const wav = await antigravity.speak(text, voice, p.language, ctx.signal)
+      rel = saveFile(p.id, 'audio', '.wav', wav)
     } else {
       const wav = await gemini.speak(text, voice, p.language, ctx.signal)
       rel = saveFile(p.id, 'audio', '.wav', wav)
@@ -338,7 +458,12 @@ export function generateClipTts(clipId: string): Job {
       clipId,
       kind: 'audio',
       provider: p.ttsProvider,
-      model: p.ttsProvider === 'gemini' ? getSettings().geminiTtsModel : getSettings().elevenModel,
+      model:
+        p.ttsProvider === 'gemini'
+          ? getSettings().geminiTtsModel
+          : p.ttsProvider === 'antigravity'
+            ? getSettings().antigravityTtsModel
+            : getSettings().elevenModel,
       prompt: text,
       localPath: rel,
       durationMs: audioMs,

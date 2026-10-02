@@ -1,8 +1,8 @@
 @echo off
 setlocal
-rem Bang Story - klik 2x file ini untuk membuka aplikasi di Windows.
+rem Logidex - klik 2x file ini untuk membuka aplikasi di Windows.
 cd /d "%~dp0"
-title Bang Story
+title Logidex
 
 where node >nul 2>nul
 if errorlevel 1 (
@@ -22,7 +22,7 @@ if not exist "node_modules\.bangstory-windows" (
     rmdir /s /q "node_modules"
   )
   echo.
-  echo  Menyiapkan Bang Story untuk pertama kali.
+  echo  Menyiapkan Logidex untuk pertama kali.
   echo  Butuh koneksi internet dan beberapa menit, jangan tutup jendela ini...
   echo.
   call npm install

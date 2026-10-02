@@ -27,6 +27,7 @@ import { chooseCuts, cutsFromWords } from './cuts'
 import { probeDurationMs } from './services/audio'
 import * as eleven from './services/elevenlabs'
 import * as gemini from './services/gemini'
+import * as antigravity from './services/antigravity'
 import { timeScript, whisperReady } from './whisper'
 
 /**
@@ -111,9 +112,17 @@ async function whisperTimes(take: string, words: string[], p: Project, total: nu
   }
 }
 
-async function geminiTake(p: Project, voice: string, group: Clip[], tmp: string, ctx: TaskCtx, note: () => void): Promise<Segment[]> {
+async function audioTake(
+  speakFn: (text: string, voice: string, lang: string, signal?: AbortSignal) => Promise<Buffer>,
+  p: Project,
+  voice: string,
+  group: Clip[],
+  tmp: string,
+  ctx: TaskCtx,
+  note: () => void
+): Promise<Segment[]> {
   // A long pause between scenes gives the cutter a clear gap to find.
-  const wav = await gemini.speak(group.map((c) => c.narration.trim()).join('\n<long pause>\n'), voice, p.language, ctx.signal)
+  const wav = await speakFn(group.map((c) => c.narration.trim()).join('\n<long pause>\n'), voice, p.language, ctx.signal)
   const take = join(tmp, `take-${randomUUID()}.wav`)
   writeFileSync(take, wav)
   const total = (await probeDurationMs(take)) / 1000
@@ -166,6 +175,14 @@ async function geminiTake(p: Project, voice: string, group: Clip[], tmp: string,
     out.push({ clip: group[k], file, durationMs: Math.round(len * 1000), words, estimated: !timed, timedBy: timed ? WHISPER_TIMING : undefined })
   }
   return out
+}
+
+async function geminiTake(p: Project, voice: string, group: Clip[], tmp: string, ctx: TaskCtx, note: () => void): Promise<Segment[]> {
+  return audioTake(gemini.speak, p, voice, group, tmp, ctx, note)
+}
+
+async function antigravityTake(p: Project, voice: string, group: Clip[], tmp: string, ctx: TaskCtx, note: () => void): Promise<Segment[]> {
+  return audioTake(antigravity.speak, p, voice, group, tmp, ctx, note)
 }
 
 async function elevenTake(
@@ -222,7 +239,12 @@ function store(p: Project, s: Segment, voice: string, takeId: string, bytes: Buf
     clipId: s.clip.id,
     kind: 'audio',
     provider: p.ttsProvider,
-    model: p.ttsProvider === 'gemini' ? getSettings().geminiTtsModel : getSettings().elevenModel,
+    model:
+      p.ttsProvider === 'gemini'
+        ? getSettings().geminiTtsModel
+        : p.ttsProvider === 'antigravity'
+          ? getSettings().antigravityTtsModel
+          : getSettings().elevenModel,
     prompt: s.clip.narration,
     localPath: rel,
     durationMs: s.durationMs,
@@ -248,7 +270,7 @@ export function generateNarration(projectId: string, mode: 'missing' | 'all'): J
   emit.job(job)
   return runJob(job, 'tts', async (ctx) => {
     const p = getProject(projectId)
-    const voice = p.ttsVoice || (p.ttsProvider === 'gemini' ? 'Charon' : '')
+    const voice = p.ttsVoice || 'Charon'
     if (p.ttsProvider === 'elevenlabs' && !voice) throw new Error('Pilih suara ElevenLabs dulu di langkah Ide cerita.')
     const clips = targets.map((c) => getClip(c.id)).filter((c) => c.narration.trim())
     const groups = parts(clips, p.ttsProvider)
@@ -270,9 +292,13 @@ export function generateNarration(projectId: string, mode: 'missing' | 'all'): J
                 tmp,
                 ctx
               )
-            : await geminiTake(p, voice, group, tmp, ctx, () =>
-                ctx.progress(0.05 + 0.85 * ((done + group.length * 0.6) / clips.length), 'Menyinkronkan caption dengan Whisper')
-              )
+            : p.ttsProvider === 'antigravity'
+              ? await antigravityTake(p, voice, group, tmp, ctx, () =>
+                  ctx.progress(0.05 + 0.85 * ((done + group.length * 0.6) / clips.length), 'Menyinkronkan caption dengan Whisper')
+                )
+              : await geminiTake(p, voice, group, tmp, ctx, () =>
+                  ctx.progress(0.05 + 0.85 * ((done + group.length * 0.6) / clips.length), 'Menyinkronkan caption dengan Whisper')
+                )
         ctx.progress(0.05 + 0.85 * ((done + group.length * 0.9) / clips.length), 'Memotong suara per adegan')
         for (const s of segments) store(p, s, voice, takeId, readFileSync(s.file))
         done += group.length
