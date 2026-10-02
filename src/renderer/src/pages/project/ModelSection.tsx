@@ -165,11 +165,11 @@ export function ModelSection({
               />
               <p className="flex items-center gap-1.5 text-[12.5px] leading-snug text-ink-2">
                 <Sparkles className="size-3.5 text-accent" />
-                <span>Imagen 3 melalui Antigravity Auth relay · Bebas kredit Higgsfield</span>
+                <span>Imagen 3 melalui Antigravity OAuth · Bebas kredit Higgsfield</span>
               </p>
               <p className="flex items-start gap-1.5 text-[12.5px] leading-snug text-muted">
                 {hasAgKey === false
-                  ? 'Proxy Antigravity belum terhubung. Atur di Pengaturan.'
+                  ? 'Antigravity OAuth belum terhubung. Hubungkan di Pengaturan.'
                   : 'Wajah dan kostum karakter dibuat konsisten berdasarkan deskripsi naskah.'}
               </p>
             </>
@@ -238,7 +238,7 @@ export function ModelSection({
               />
               <p className="flex items-center gap-1.5 text-[12.5px] leading-snug text-ink-2">
                 <Sparkles className="size-3.5 text-accent" />
-                <span>Veo 2 (Image-to-Video) melalui Antigravity Auth relay · Bebas kredit Higgsfield</span>
+                <span>Veo 2 (Image-to-Video) melalui Antigravity OAuth · Bebas kredit Higgsfield</span>
               </p>
               <p className="flex items-start gap-1.5 text-[12.5px] leading-snug text-muted">
                 <Move className="mt-px size-3.5 shrink-0" />

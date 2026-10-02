@@ -181,7 +181,6 @@ async function fetchModels(source: ModelSource): Promise<ModelOption[]> {
 
 function cacheKey(source: ModelSource): string {
   if (source === 'custom') return `models:custom:${getSettings().customBaseUrl.trim()}`
-  if (source === 'antigravity') return `models:antigravity:${(getSettings().antigravityBaseUrl || '').trim()}`
   return `models:${source}`
 }
 

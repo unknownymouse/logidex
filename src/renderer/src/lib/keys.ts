@@ -14,7 +14,7 @@ export function ttsReadiness(keys: KeyStatus[]): Record<TtsProvider, { ok: boole
   const one = (p: TtsProvider): { ok: boolean; reason: string | null } => {
     const k = keys.find((x) => x.provider === p)
     const name = p === 'gemini' ? 'Gemini' : p === 'elevenlabs' ? 'ElevenLabs' : 'Antigravity'
-    if (!k?.configured) return { ok: false, reason: `Kunci / proxy ${name} belum diisi` }
+    if (!k?.configured) return { ok: false, reason: p === 'antigravity' ? 'Antigravity OAuth belum terhubung' : `Kunci ${name} belum diisi` }
     if (k.lastOk === false) return { ok: false, reason: `Koneksi ${name} tidak valid` }
     return { ok: true, reason: null }
   }

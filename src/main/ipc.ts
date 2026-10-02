@@ -208,16 +208,9 @@ export function registerIpc(): void {
     recordCheck('custom', result.ok, result.message)
     return result
   })
-  handle('settings:setAntigravity', async (baseUrl: string, key?: string) => {
-    const url = baseUrl.trim().replace(/\/+$/, '')
-    if (!/^https?:\/\/[^\s]+$/i.test(url)) throw new Error('Alamat endpoint harus diawali http:// atau https://')
-    setSettings({ antigravityBaseUrl: url })
-    if (key !== undefined) {
-      if (key.trim()) setSecret('antigravity', key.trim())
-      else clearSecret('antigravity')
-    }
+  handle('settings:setAntigravity', async () => {
     dropCache('models:antigravity')
-    const result = await antigravity.testKey(key?.trim() || undefined, url)
+    const result = await antigravity.testKey()
     recordCheck('antigravity', result.ok, result.message)
     return result
   })

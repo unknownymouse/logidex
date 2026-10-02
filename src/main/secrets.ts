@@ -123,26 +123,38 @@ export function recordCheck(provider: ApiProvider, ok: boolean, message: string)
   }
 }
 
+import { getOAuthStatus } from './services/googleOAuth'
+
 export function keyStatuses(): KeyStatus[] {
   const rows = getDb().prepare('SELECT * FROM secrets').all() as SecretRow[]
   const customUrl = getSettings().customBaseUrl.trim()
-  const antigravityUrl = (getSettings().antigravityBaseUrl || '').trim()
   return PROVIDERS.map((provider) => {
     const r = rows.find((x) => x.provider === provider)
     const hasKey = !!r && r.value.length > 0
     const value = hasKey ? decrypt(r!.value) : null
     const unreadable = hasKey && value == null
+    const oauth = provider === 'antigravity' ? getOAuthStatus() : null
     const configured =
       provider === 'custom'
         ? !!customUrl
         : provider === 'antigravity'
-          ? !!(antigravityUrl || hasKey)
+          ? (!!oauth?.connected || hasKey)
           : hasKey
     return {
       provider,
       configured,
-      lastOk: unreadable ? false : r?.last_ok == null ? null : r.last_ok === 1,
-      lastMessage: unreadable ? 'Kunci tersimpan tapi tidak bisa dibuka lagi. Masukkan ulang kuncinya.' : (r?.last_message ?? null),
+      lastOk: unreadable
+        ? false
+        : provider === 'antigravity' && oauth?.connected
+          ? true
+          : r?.last_ok == null
+            ? null
+            : r.last_ok === 1,
+      lastMessage: unreadable
+        ? 'Kunci tersimpan tapi tidak bisa dibuka lagi. Masukkan ulang kuncinya.'
+        : provider === 'antigravity' && oauth?.connected
+          ? `Terhubung via Google OAuth (${oauth.email || 'Aktif'})`
+          : (r?.last_message ?? null),
       checkedAt: r?.checked_at ?? null,
       preview: value ? mask(value) : null,
       unreadable

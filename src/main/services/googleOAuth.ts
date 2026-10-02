@@ -1,7 +1,7 @@
 import http from 'http'
 import crypto from 'crypto'
 import { shell } from 'electron'
-import { clearNamedSecret, getNamedSecret, recordCheck, setNamedSecret, setSecret } from '../secrets'
+import { clearNamedSecret, clearSecret, getNamedSecret, recordCheck, setNamedSecret, setSecret } from '../secrets'
 
 // Antigravity OAuth credentials supporting Google Cloud Platform APIs
 const CLIENT_ID = String.fromCharCode(
@@ -87,8 +87,9 @@ export async function getValidAccessToken(): Promise<string | null> {
     }
 
     setNamedSecret('google_oauth', JSON.stringify(tokens))
-    // Also keep gemini secret in sync so other components see it
+    // Also keep gemini and antigravity secrets in sync so other components see it
     setSecret('gemini', newAccess)
+    setSecret('antigravity', newAccess)
     return newAccess
   } catch {
     return null
@@ -115,6 +116,8 @@ export function disconnectOAuth(): void {
     activeServer = null
   }
   clearNamedSecret('google_oauth')
+  clearSecret('gemini')
+  clearSecret('antigravity')
   recordCheck('gemini', false, 'OAuth diputuskan')
   recordCheck('antigravity', false, 'OAuth diputuskan')
 }
@@ -244,6 +247,7 @@ export function startOAuthLogin(): Promise<{ ok: boolean; email?: string; messag
 
         setNamedSecret('google_oauth', JSON.stringify(stored))
         setSecret('gemini', accessToken)
+        setSecret('antigravity', accessToken)
         recordCheck('gemini', true, `Terhubung via Google OAuth (${email || 'Aktif'})`)
         recordCheck('antigravity', true, `Terhubung via Google OAuth (${email || 'Aktif'})`)
 

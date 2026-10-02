@@ -1,33 +1,42 @@
 import { AspectRatio, KeyTestResult, ModelOption, VoiceOption } from '@shared/types'
 import { GEMINI_VOICES, geminiVoiceName, geminiVoiceTone } from '@shared/models'
+import {
+  ANTIGRAVITY_IMAGE_MODELS,
+  ANTIGRAVITY_VIDEO_MODELS,
+  ANTIGRAVITY_TTS_MODELS,
+  ANTIGRAVITY_LLM_MODELS
+} from '@shared/antigravity'
 import { getSecret } from '../secrets'
 import { getSettings } from '../settings'
 import { isWav, pcmToWav } from './audio'
 import { downloadTo, sleep } from './http'
+import { extractJson } from './json'
 import { getOAuthStatus, getValidAccessToken } from './googleOAuth'
 
-function baseUrl(override?: string): string {
-  const raw = override ?? getSettings().antigravityBaseUrl ?? 'http://127.0.0.1:8045'
-  const trimmed = raw.trim().replace(/\/+$/, '')
-  // If default local proxy is set but OAuth is connected, Google API is used directly
-  if (trimmed === 'http://127.0.0.1:8045' && getOAuthStatus().connected) {
-    return 'https://generativelanguage.googleapis.com'
-  }
-  return trimmed
-}
+export {
+  ANTIGRAVITY_IMAGE_MODELS,
+  ANTIGRAVITY_VIDEO_MODELS,
+  ANTIGRAVITY_TTS_MODELS,
+  ANTIGRAVITY_LLM_MODELS,
+  getAntigravityImageModel,
+  getAntigravityVideoModel,
+  getAntigravityLlmModel
+} from '@shared/antigravity'
 
-async function authHeaders(keyOverride?: string): Promise<Record<string, string>> {
-  let key = keyOverride !== undefined ? keyOverride : (getSecret('antigravity') ?? '')
-  if (!key.trim()) {
-    const oauthToken = await getValidAccessToken()
-    if (oauthToken) key = oauthToken
+const GOOGLE_API_BASE = 'https://generativelanguage.googleapis.com'
+
+async function getAuthHeader(): Promise<Record<string, string>> {
+  const token = await getValidAccessToken()
+  const rawKey = token || (getSecret('antigravity') ?? '')
+  if (!rawKey.trim()) {
+    throw new Error('Antigravity belum terhubung ke Google OAuth. Silakan masuk dengan Google di Pengaturan.')
   }
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  if (key.trim()) {
-    headers['Authorization'] = `Bearer ${key.trim()}`
-    if (key.trim().startsWith('AIza')) {
-      headers['x-goog-api-key'] = key.trim()
-    }
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${rawKey.trim()}`
+  }
+  if (rawKey.trim().startsWith('AIza')) {
+    headers['x-goog-api-key'] = rawKey.trim()
   }
   return headers
 }
@@ -35,46 +44,43 @@ async function authHeaders(keyOverride?: string): Promise<Record<string, string>
 function friendly(e: unknown): Error {
   const msg = (e as Error)?.message ?? String(e)
   if (/ECONNREFUSED|ENOTFOUND|fetch failed|network/i.test(msg)) {
-    return new Error('Tidak bisa terhubung ke Antigravity Proxy. Pastikan proxy lokal sudah berjalan, atau gunakan tombol "Masuk dengan Google (OAuth)".')
+    return new Error('Gagal terhubung ke Google. Periksa koneksi internet kamu.')
   }
   if (/401|403|unauthorized|forbidden/i.test(msg)) {
-    return new Error('Autentikasi Antigravity ditolak. Periksa kunci / token atau login ulang Google OAuth di Pengaturan.')
+    return new Error('Autentikasi Google OAuth ditolak. Masuk ulang Google OAuth di Pengaturan.')
   }
   if (/429|quota|rate limit/i.test(msg)) {
-    return new Error('Batas permintaan Antigravity tercapai. Coba lagi sebentar.')
+    return new Error('Batas permintaan Google tercapai. Coba lagi sebentar.')
   }
   return new Error(`Antigravity gagal: ${msg}`)
 }
 
-export async function testKey(key?: string, urlOverride?: string): Promise<KeyTestResult> {
+export async function testKey(_key?: string, _urlOverride?: string): Promise<KeyTestResult> {
   const oauth = getOAuthStatus()
-  if (oauth.connected && (!key || key.startsWith('ya29.')) && (!urlOverride || urlOverride === 'http://127.0.0.1:8045')) {
-    return { ok: true, message: `Terhubung via Google OAuth (${oauth.email || 'Aktif'})` }
+  if (!oauth.connected) {
+    return { ok: false, message: 'Belum masuk ke Google OAuth. Klik Masuk dengan Google di Pengaturan.' }
+  }
+  const token = await getValidAccessToken()
+  if (!token) {
+    return { ok: false, message: 'Sesi Google OAuth kedaluwarsa. Silakan masuk ulang dengan Google.' }
   }
 
-  const base = baseUrl(urlOverride)
-  const headers = await authHeaders(key)
   try {
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 6000)
-    let res: Response | null = null
-    for (const ep of ['/v1/models', '/models', '/v1beta/models', '/health', '/']) {
-      try {
-        res = await fetch(`${base}${ep}`, { headers, signal: controller.signal })
-        if (res.ok || res.status === 401 || res.status === 403) break
-      } catch {
-        // try next endpoint
-      }
-    }
+    const timer = setTimeout(() => controller.abort(), 8000)
+    const res = await fetch(`${GOOGLE_API_BASE}/v1beta/models`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: controller.signal
+    })
     clearTimeout(timer)
-    if (!res) throw new Error('Tidak ada respons dari proxy Antigravity. Pastikan proxy lokal sudah berjalan.')
+
     if (res.ok) {
-      return { ok: true, message: `Terhubung ke Antigravity Proxy (${base})` }
+      return { ok: true, message: `Terhubung via Google OAuth (${oauth.email || 'Aktif'})` }
     }
     if (res.status === 401 || res.status === 403) {
-      return { ok: false, message: 'Autentikasi ditolak (401/403). Periksa kunci atau login OAuth di proxy.' }
+      return { ok: false, message: 'Autentikasi Google OAuth ditolak (401/403). Silakan masuk ulang di Pengaturan.' }
     }
-    return { ok: true, message: `Terhubung ke Antigravity (${res.status})` }
+    return { ok: true, message: `Terhubung ke Google (${res.status})` }
   } catch (e) {
     return { ok: false, message: friendly(e).message }
   }
@@ -88,24 +94,6 @@ export function listVoices(): VoiceOption[] {
   }))
 }
 
-import { extractJson } from './json'
-
-export {
-  ANTIGRAVITY_IMAGE_MODELS,
-  ANTIGRAVITY_VIDEO_MODELS,
-  ANTIGRAVITY_TTS_MODELS,
-  ANTIGRAVITY_LLM_MODELS,
-  getAntigravityImageModel,
-  getAntigravityVideoModel,
-  getAntigravityLlmModel
-} from '@shared/antigravity'
-import {
-  ANTIGRAVITY_IMAGE_MODELS,
-  ANTIGRAVITY_VIDEO_MODELS,
-  ANTIGRAVITY_TTS_MODELS,
-  ANTIGRAVITY_LLM_MODELS
-} from '@shared/antigravity'
-
 export function listModels(kind: 'text' | 'image' | 'video' | 'tts'): ModelOption[] {
   if (kind === 'text') return ANTIGRAVITY_LLM_MODELS
   if (kind === 'image') return ANTIGRAVITY_IMAGE_MODELS
@@ -114,8 +102,7 @@ export function listModels(kind: 'text' | 'image' | 'video' | 'tts'): ModelOptio
 }
 
 /**
- * Structured JSON generation for story scripts and plans using Antigravity Auth relay.
- * Supports OpenAI /v1/chat/completions format with automatic fallback to Gemini native :generateContent.
+ * Structured JSON generation for story scripts and plans using Google Gemini API directly with OAuth.
  */
 export async function generateJson(
   model: string,
@@ -124,114 +111,54 @@ export async function generateJson(
   schema: object,
   signal?: AbortSignal
 ): Promise<unknown> {
-  const base = baseUrl()
-  const headers = await authHeaders()
+  const headers = await getAuthHeader()
   const m = model || 'gemini-2.5-flash'
 
-  // Attempt 1: OpenAI chat completions (/v1/chat/completions or /chat/completions)
-  const openAiBody = {
-    model: m,
-    messages: [
-      { role: 'system', content: `${system}\n\nReturn a valid JSON object matching the requested schema.` },
-      { role: 'user', content: prompt }
-    ],
-    response_format: { type: 'json_object' }
-  }
-
-  for (const path of ['/v1/chat/completions', '/chat/completions']) {
-    try {
-      const res = await fetch(`${base}${path}`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(openAiBody),
-        signal
-      })
-      if (res.ok) {
-        const json = (await res.json()) as any
-        const text = json?.choices?.[0]?.message?.content ?? ''
-        if (text) {
-          try {
-            return extractJson(text)
-          } catch {
-            return JSON.parse(text)
-          }
-        }
-      }
-    } catch {
-      // try next
-    }
-  }
-
-  // Attempt 2: Google Gemini generateContent format
   const geminiBody = {
     systemInstruction: { parts: [{ text: system }] },
-    contents: [{ role: 'user', parts: [{ text: `${prompt}\n\nReply with ONE valid JSON object only.` }] }],
+    contents: [
+      {
+        role: 'user',
+        parts: [{ text: `${prompt}\n\nBalas HANYA dengan SATU objek JSON yang valid sesuai skema berikut:\n${JSON.stringify(schema)}` }]
+      }
+    ],
     generationConfig: {
       responseMimeType: 'application/json'
     }
   }
 
-  for (const path of [
-    `/v1beta/models/${m}:generateContent`,
-    `/v1/models/${m}:generateContent`,
-    `/models/${m}:generateContent`
-  ]) {
-    try {
-      const res = await fetch(`${base}${path}`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(geminiBody),
-        signal
-      })
-      if (res.ok) {
-        const json = (await res.json()) as any
-        const text = json?.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
-        if (text) {
-          try {
-            return extractJson(text)
-          } catch {
-            return JSON.parse(text)
-          }
-        }
-      }
-    } catch {
-      // try next
-    }
-  }
+  try {
+    const res = await fetch(`${GOOGLE_API_BASE}/v1beta/models/${m}:generateContent`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(geminiBody),
+      signal
+    })
 
-  // Attempt 3: Schema in prompt fallback
-  const fallbackPrompt = `${prompt}\n\nReply with ONE JSON object only (no markdown, no commentary) matching this schema:\n${JSON.stringify(schema)}`
-  const fallbackBody = {
-    model: m,
-    messages: [
-      { role: 'system', content: system },
-      { role: 'user', content: fallbackPrompt }
-    ]
-  }
-  for (const path of ['/v1/chat/completions', '/chat/completions']) {
-    try {
-      const res = await fetch(`${base}${path}`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(fallbackBody),
-        signal
-      })
-      if (res.ok) {
-        const json = (await res.json()) as any
-        const text = json?.choices?.[0]?.message?.content ?? ''
-        if (text) return extractJson(text)
-      }
-    } catch {
-      // try next
+    if (!res.ok) {
+      const errJson = (await res.json().catch(() => null)) as any
+      const errMsg = errJson?.error?.message || `HTTP ${res.status}`
+      throw new Error(errMsg)
     }
-  }
 
-  throw new Error(`Tidak bisa menyusun cerita dengan model "${m}" lewat Antigravity. Pastikan proxy berjalan dan model tersedia.`)
+    const json = (await res.json()) as any
+    const text = json?.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
+    if (!text) {
+      throw new Error('Model tidak mengembalikan teks jawaban.')
+    }
+    try {
+      return extractJson(text)
+    } catch {
+      return JSON.parse(text)
+    }
+  } catch (e) {
+    if (signal?.aborted) throw new Error('Dibatalkan')
+    throw friendly(e)
+  }
 }
 
 /**
- * Generates an image using the local Antigravity proxy.
- * Supports OpenAI /v1/images/generations or Google predict formats.
+ * Generates an image using Google Imagen directly with OAuth.
  */
 export async function generateImage(
   prompt: string,
@@ -239,52 +166,47 @@ export async function generateImage(
   modelId?: string,
   signal?: AbortSignal
 ): Promise<{ bytes: Buffer; contentType: string }> {
-  const base = baseUrl()
-  const headers = await authHeaders()
+  const headers = await getAuthHeader()
   const model = modelId || getSettings().antigravityImageModel || 'imagen-3.0-generate-002'
 
-  // Map aspect ratio to dimensions if needed
-  const size = aspect === '9:16' ? '768x1344' : '1344x768'
-
   try {
-    // Attempt 1: Standard OpenAI image generations format
-    let res = await fetch(`${base}/v1/images/generations`, {
+    // Attempt 1: predict endpoint
+    let res = await fetch(`${GOOGLE_API_BASE}/v1beta/models/${model}:predict`, {
       method: 'POST',
       headers,
       body: JSON.stringify({
-        model,
-        prompt,
-        n: 1,
-        size,
-        aspect_ratio: aspect,
-        response_format: 'b64_json'
+        instances: [{ prompt }],
+        parameters: { sampleCount: 1, aspectRatio: aspect }
       }),
       signal
     })
 
+    // Attempt 2: generateImages endpoint
     if (!res.ok) {
-      // Attempt 2: Google GenAI predict / generateImages format
-      res = await fetch(`${base}/v1beta/models/${model}:predict`, {
+      res = await fetch(`${GOOGLE_API_BASE}/v1beta/models/${model}:generateImages`, {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          instances: [{ prompt }],
-          parameters: { sampleCount: 1, aspectRatio: aspect }
+          prompt,
+          numberOfImages: 1,
+          aspectRatio: aspect,
+          outputMimeType: 'image/png'
         }),
         signal
       })
     }
 
     if (!res.ok) {
-      const errBody = await res.text().catch(() => '')
-      throw new Error(`HTTP ${res.status}: ${errBody.slice(0, 300)}`)
+      const errJson = (await res.json().catch(() => null)) as any
+      const errMsg = errJson?.error?.message || `HTTP ${res.status}`
+      throw new Error(errMsg)
     }
 
     const data = (await res.json()) as any
-    // Parse response
     const b64 =
-      data?.data?.[0]?.b64_json ||
       data?.predictions?.[0]?.bytesBase64Encoded ||
+      data?.generatedImages?.[0]?.image?.imageBytes ||
+      data?.data?.[0]?.b64_json ||
       data?.images?.[0]?.image ||
       data?.image
 
@@ -298,7 +220,7 @@ export async function generateImage(
       return { bytes: dl.bytes, contentType: dl.contentType || 'image/png' }
     }
 
-    throw new Error('Proxy Antigravity tidak mengembalikan gambar atau base64 yang valid')
+    throw new Error('Google Imagen tidak mengembalikan gambar atau base64 yang valid.')
   } catch (e) {
     if (signal?.aborted) throw new Error('Dibatalkan')
     throw friendly(e)
@@ -306,7 +228,7 @@ export async function generateImage(
 }
 
 /**
- * Generates video using the Antigravity proxy.
+ * Generates video using Google Veo directly with OAuth.
  */
 export async function generateVideo(
   prompt: string,
@@ -316,71 +238,55 @@ export async function generateVideo(
   modelId?: string,
   signal?: AbortSignal
 ): Promise<{ bytes: Buffer; contentType: string }> {
-  const base = baseUrl()
-  const headers = await authHeaders()
+  const headers = await getAuthHeader()
   const model = modelId || getSettings().antigravityVideoModel || 'veo-2.0-generate-001'
 
-  const b64Image = typeof imageInput === 'string' && !imageInput.startsWith('http')
-    ? imageInput
-    : Buffer.isBuffer(imageInput)
-      ? imageInput.toString('base64')
-      : null
+  const b64Image =
+    typeof imageInput === 'string' && !imageInput.startsWith('http')
+      ? imageInput
+      : Buffer.isBuffer(imageInput)
+        ? imageInput.toString('base64')
+        : null
 
   try {
-    // Attempt OpenAI /v1/videos/generations or Google Veo predict
-    let res = await fetch(`${base}/v1/videos/generations`, {
+    const res = await fetch(`${GOOGLE_API_BASE}/v1beta/models/${model}:predict`, {
       method: 'POST',
       headers,
       body: JSON.stringify({
-        model,
-        prompt,
-        image: b64Image ? `data:image/png;base64,${b64Image}` : (typeof imageInput === 'string' ? imageInput : undefined),
-        duration: durationSec,
-        aspect_ratio: aspect
+        instances: [
+          {
+            prompt,
+            image: b64Image ? { bytesBase64Encoded: b64Image } : undefined
+          }
+        ],
+        parameters: { durationSeconds: durationSec, aspectRatio: aspect }
       }),
       signal
     })
 
     if (!res.ok) {
-      res = await fetch(`${base}/v1beta/models/${model}:predict`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          instances: [
-            {
-              prompt,
-              image: b64Image ? { bytesBase64Encoded: b64Image } : undefined
-            }
-          ],
-          parameters: { durationSeconds: durationSec, aspectRatio: aspect }
-        }),
-        signal
-      })
-    }
-
-    if (!res.ok) {
-      const errBody = await res.text().catch(() => '')
-      throw new Error(`HTTP ${res.status}: ${errBody.slice(0, 300)}`)
+      const errJson = (await res.json().catch(() => null)) as any
+      const errMsg = errJson?.error?.message || `HTTP ${res.status}`
+      throw new Error(errMsg)
     }
 
     const data = (await res.json()) as any
     const b64 =
-      data?.data?.[0]?.b64_json ||
       data?.predictions?.[0]?.bytesBase64Encoded ||
-      data?.video
+      data?.video ||
+      data?.data?.[0]?.b64_json
 
     if (b64) {
       return { bytes: Buffer.from(b64, 'base64'), contentType: 'video/mp4' }
     }
 
-    let url = data?.data?.[0]?.url || data?.predictions?.[0]?.url || data?.url
-    // If it returns an operation ID, poll until complete
+    let url = data?.predictions?.[0]?.url || data?.data?.[0]?.url || data?.url
     const opId = data?.name || data?.id
     if (!url && opId) {
       const started = Date.now()
       while (Date.now() - started < 15 * 60 * 1000) {
         await sleep(3000, signal)
-        const check = await fetch(`${base}/v1/operations/${opId}`, { headers, signal })
+        const check = await fetch(`${GOOGLE_API_BASE}/v1/operations/${opId}`, { headers, signal })
         if (check.ok) {
           const pollData = (await check.json()) as any
           if (pollData?.done) {
@@ -396,7 +302,7 @@ export async function generateVideo(
       return { bytes: dl.bytes, contentType: dl.contentType || 'video/mp4' }
     }
 
-    throw new Error('Proxy Antigravity tidak mengembalikan video yang selesai')
+    throw new Error('Google Veo tidak mengembalikan video yang selesai.')
   } catch (e) {
     if (signal?.aborted) throw new Error('Dibatalkan')
     throw friendly(e)
@@ -404,7 +310,7 @@ export async function generateVideo(
 }
 
 /**
- * Generates speech audio using the Antigravity proxy.
+ * Generates speech audio using Google Gemini TTS directly with OAuth.
  * Returns WAV audio buffer.
  */
 export async function speak(
@@ -413,32 +319,11 @@ export async function speak(
   _languageCode: string,
   signal?: AbortSignal
 ): Promise<Buffer> {
-  const base = baseUrl()
-  const headers = await authHeaders()
+  const headers = await getAuthHeader()
   const model = getSettings().antigravityTtsModel || 'gemini-2.5-flash'
 
   try {
-    // Attempt 1: OpenAI compatible /v1/audio/speech
-    let res = await fetch(`${base}/v1/audio/speech`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        model,
-        input: text,
-        voice: voice || 'Charon',
-        response_format: 'wav'
-      }),
-      signal
-    })
-
-    if (res.ok) {
-      const arrayBuf = await res.arrayBuffer()
-      const bytes = Buffer.from(arrayBuf)
-      return isWav(bytes) ? bytes : pcmToWav(bytes)
-    }
-
-    // Attempt 2: Google GenAI generateContent with audio modality
-    res = await fetch(`${base}/v1beta/models/${model}:generateContent`, {
+    const res = await fetch(`${GOOGLE_API_BASE}/v1beta/models/${model}:generateContent`, {
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -455,18 +340,21 @@ export async function speak(
       signal
     })
 
-    if (res.ok) {
-      const data = (await res.json()) as any
-      const inlineData = data?.candidates?.[0]?.content?.parts?.[0]?.inlineData
-      const b64 = inlineData?.data
-      if (b64) {
-        const raw = Buffer.from(b64, 'base64')
-        return isWav(raw) ? raw : pcmToWav(raw)
-      }
+    if (!res.ok) {
+      const errJson = (await res.json().catch(() => null)) as any
+      const errMsg = errJson?.error?.message || `HTTP ${res.status}`
+      throw new Error(errMsg)
     }
 
-    const err = await res.text().catch(() => '')
-    throw new Error(`HTTP ${res.status}: ${err.slice(0, 300)}`)
+    const data = (await res.json()) as any
+    const inlineData = data?.candidates?.[0]?.content?.parts?.[0]?.inlineData
+    const b64 = inlineData?.data
+    if (b64) {
+      const raw = Buffer.from(b64, 'base64')
+      return isWav(raw) ? raw : pcmToWav(raw)
+    }
+
+    throw new Error('Google Gemini TTS tidak mengembalikan data audio.')
   } catch (e) {
     if (signal?.aborted) throw new Error('Dibatalkan')
     throw friendly(e)
