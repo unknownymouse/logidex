@@ -428,14 +428,14 @@ function ClipPanel({ clip, index, total }: { clip: Clip; index: number; total: n
 
                   {project.videoProvider === 'antigravity' ? (
                     <div className="flex flex-col gap-1.5 pt-1">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs text-ink-2">Model Veo 2:</span>
-                        <div className="flex gap-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs text-ink-2 shrink-0">Model Veo:</span>
+                        <div className="flex flex-wrap gap-1 justify-end">
                           {ANTIGRAVITY_VIDEO_MODELS.map((m) => (
                             <Chip
                               key={m.id}
                               on={(project.videoModel || DEFAULT_ANTIGRAVITY_VIDEO_MODEL) === m.id}
-                              className="h-7 px-2.5 text-xs"
+                              className="h-7 px-2 text-xs"
                               onClick={() => updateProject({ videoModel: m.id })}
                             >
                               {m.name}
@@ -444,7 +444,7 @@ function ClipPanel({ clip, index, total }: { clip: Clip; index: number; total: n
                         </div>
                       </div>
                       <p className="text-[11.5px] text-ok-ink">
-                        ✓ Google Veo 2 via Antigravity OAuth · Bebas kredit Higgsfield
+                        ✓ Google Veo via Antigravity OAuth · Bebas kredit Higgsfield
                       </p>
                     </div>
                   ) : (

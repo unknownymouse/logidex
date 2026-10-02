@@ -125,6 +125,13 @@ export const ANTIGRAVITY_IMAGE_MODELS: ModelOption[] = [
 
 export const ANTIGRAVITY_VIDEO_MODELS: ModelOption[] = [
   {
+    id: 'veo-3.0-generate-preview',
+    name: 'Veo 3 · Preview',
+    description: 'Generasi video mutakhir Google DeepMind generasi ke-3 dengan pemahaman fisika gerak dan detail sinematik ultra tinggi.',
+    family: 'Veo',
+    tags: ['Google', 'DeepMind', 'Terbaru', 'HQ']
+  },
+  {
     id: 'veo-2.0-generate-001',
     name: 'Veo 2 · Standard',
     description: 'Generasi video AI sinematik dengan gerak alami dan resolusi tinggi.',
@@ -137,6 +144,13 @@ export const ANTIGRAVITY_VIDEO_MODELS: ModelOption[] = [
     description: 'Generasi video AI dengan proses lebih cepat.',
     family: 'Veo',
     tags: ['Google', 'Cepat']
+  },
+  {
+    id: 'veo-2.0-generate-exp',
+    name: 'Veo 2 · Experimental',
+    description: 'Varian eksperimental Veo 2 dengan dinamika kamera dan pencahayaan realistis tingkat lanjut.',
+    family: 'Veo',
+    tags: ['Google', 'Eksperimental']
   }
 ]
 
