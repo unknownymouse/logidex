@@ -21,6 +21,27 @@ export const ANTIGRAVITY_LLM_MODELS: ModelOption[] = [
     tags: ['Google', 'Pintar', 'JSON', 'Terbaru']
   },
   {
+    id: 'claude-sonnet-4-6',
+    name: 'Claude Sonnet 4.6 (Thinking)',
+    description: 'Model penalaran cerdas Claude Sonnet 4.6 via Antigravity dengan kuota independen dan naskah sangat deskriptif.',
+    family: 'Claude',
+    tags: ['Antigravity', 'Thinking', 'Rekomendasi', 'JSON']
+  },
+  {
+    id: 'claude-opus-4-6',
+    name: 'Claude Opus 4.6 (Thinking)',
+    description: 'Model penalaran mendalam Claude Opus 4.6 via Antigravity untuk penulisan alur cerita kompleks.',
+    family: 'Claude',
+    tags: ['Antigravity', 'Thinking', 'JSON']
+  },
+  {
+    id: 'gpt-oss-120b-medium',
+    name: 'GPT-OSS 120B (Medium)',
+    description: 'Model open-source performa tinggi via Antigravity dengan penulisan naskah yang luwes.',
+    family: 'OpenAI',
+    tags: ['Antigravity', 'JSON']
+  },
+  {
     id: 'gemini-3.5-flash',
     name: 'Gemini 3.5 Flash',
     description: 'Model Gemini 3.5 seimbang, cepat dan hemat pemrosesan.',
@@ -80,11 +101,18 @@ export const ANTIGRAVITY_LLM_MODELS: ModelOption[] = [
 
 export const ANTIGRAVITY_IMAGE_MODELS: ModelOption[] = [
   {
+    id: 'gemini-3.1-flash-image',
+    name: 'Gemini 3.1 Flash Image',
+    description: 'Generasi gambar cepat dan tajam Google Gemini 3.1 via Antigravity.',
+    family: 'Gemini',
+    tags: ['Google', 'Antigravity', 'HQ', 'Rekomendasi', 'Terbaru']
+  },
+  {
     id: 'imagen-3.0-generate-002',
     name: 'Imagen 3 · Standard',
     description: 'Generasi gambar kualitas tinggi dengan detail tajam dan kepatuhan prompt presisi.',
     family: 'Imagen',
-    tags: ['Google', 'Antigravity', 'HQ', 'Rekomendasi']
+    tags: ['Google', 'Antigravity', 'HQ']
   },
   {
     id: 'imagen-3.0-fast-generate-001',
