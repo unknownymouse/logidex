@@ -3,7 +3,7 @@ export type AspectRatio = '16:9' | '9:16'
 export type TtsProvider = 'gemini' | 'elevenlabs' | 'antigravity'
 export type ImageProvider = 'higgsfield' | 'antigravity'
 export type VideoProvider = 'higgsfield' | 'antigravity'
-export type LlmProvider = 'gemini' | 'openrouter' | 'groq' | 'custom'
+export type LlmProvider = 'gemini' | 'openrouter' | 'groq' | 'custom' | 'antigravity'
 export type ApiProvider = 'higgsfield' | 'gemini' | 'elevenlabs' | 'openrouter' | 'groq' | 'custom' | 'antigravity'
 /** Where a live model list comes from: an LLM provider, or a TTS catalog. */
 export type ModelSource = LlmProvider | 'gemini-tts' | 'elevenlabs' | 'antigravity-tts' | 'antigravity-image' | 'antigravity-video'

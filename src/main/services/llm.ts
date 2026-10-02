@@ -10,7 +10,7 @@ import { extractJson } from './json'
 const STALE_MS = 24 * 60 * 60 * 1000
 const GENERATE_TIMEOUT_MS = 4 * 60 * 1000
 
-type CompatProvider = Exclude<LlmProvider, 'gemini'>
+type CompatProvider = Exclude<LlmProvider, 'gemini' | 'antigravity'>
 
 interface Compat {
   provider: CompatProvider
@@ -168,6 +168,8 @@ async function fetchModels(source: ModelSource): Promise<ModelOption[]> {
       return groqModels()
     case 'custom':
       return customModels()
+    case 'antigravity':
+      return antigravity.listModels('text')
     case 'antigravity-tts':
       return antigravity.listModels('tts')
     case 'antigravity-image':
@@ -178,7 +180,9 @@ async function fetchModels(source: ModelSource): Promise<ModelOption[]> {
 }
 
 function cacheKey(source: ModelSource): string {
-  return source === 'custom' ? `models:custom:${getSettings().customBaseUrl.trim()}` : `models:${source}`
+  if (source === 'custom') return `models:custom:${getSettings().customBaseUrl.trim()}`
+  if (source === 'antigravity') return `models:antigravity:${(getSettings().antigravityBaseUrl || '').trim()}`
+  return `models:${source}`
 }
 
 export async function listModels(source: ModelSource, refresh = false): Promise<ModelList> {
@@ -194,6 +198,7 @@ export async function listModels(source: ModelSource, refresh = false): Promise<
 
 export async function testLlm(provider: LlmProvider, key?: string | null, baseUrl?: string): Promise<KeyTestResult> {
   if (provider === 'gemini') return gemini.testKey(key ?? undefined)
+  if (provider === 'antigravity') return antigravity.testKey(key ?? undefined, baseUrl)
   try {
     const c = compat(provider, key, baseUrl)
     requireKey(c)
@@ -312,5 +317,6 @@ export async function generateJson<T>(req: { system: string; prompt: string; sch
   const { provider, model } = activeLlm()
   if (!model) throw new LlmError(`Pilih model ${PROVIDER_NAMES[provider]} dulu di Pengaturan › Kunci API dan model.`)
   if (provider === 'gemini') return (await gemini.generateJson(model, req.system, req.prompt, req.schema)) as T
+  if (provider === 'antigravity') return (await antigravity.generateJson(model, req.system, req.prompt, req.schema, req.signal)) as T
   return (await chatJson(compat(provider), model, req.system, req.prompt, req.schema, req.name, req.signal)) as T
 }

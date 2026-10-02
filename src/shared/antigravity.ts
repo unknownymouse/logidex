@@ -3,6 +3,31 @@ import type { ModelOption } from './types'
 export const DEFAULT_ANTIGRAVITY_IMAGE_MODEL = 'imagen-3.0-generate-002'
 export const DEFAULT_ANTIGRAVITY_VIDEO_MODEL = 'veo-2.0-generate-001'
 export const DEFAULT_ANTIGRAVITY_TTS_MODEL = 'gemini-2.5-flash'
+export const DEFAULT_ANTIGRAVITY_LLM_MODEL = 'gemini-2.5-flash'
+
+export const ANTIGRAVITY_LLM_MODELS: ModelOption[] = [
+  {
+    id: 'gemini-2.5-flash',
+    name: 'Gemini 2.5 Flash',
+    description: 'Model multimodal seimbang, sangat cepat dan menghasilkan naskah cerita terstruktur rapi.',
+    family: 'Gemini',
+    tags: ['Google', 'Rekomendasi', 'JSON', 'Cepat']
+  },
+  {
+    id: 'gemini-2.5-pro',
+    name: 'Gemini 2.5 Pro',
+    description: 'Penalaran cerita mendalam dan penulisan alur naskah yang lebih kaya dan dramatis.',
+    family: 'Gemini',
+    tags: ['Google', 'JSON', 'Pintar']
+  },
+  {
+    id: 'gemini-2.0-flash',
+    name: 'Gemini 2.0 Flash',
+    description: 'Generasi naskah ultra-cepat dan efisien.',
+    family: 'Gemini',
+    tags: ['Google', 'JSON', 'Cepat']
+  }
+]
 
 export const ANTIGRAVITY_IMAGE_MODELS: ModelOption[] = [
   {
@@ -61,4 +86,8 @@ export function getAntigravityImageModel(id?: string | null): ModelOption {
 
 export function getAntigravityVideoModel(id?: string | null): ModelOption {
   return ANTIGRAVITY_VIDEO_MODELS.find((m) => m.id === id) ?? ANTIGRAVITY_VIDEO_MODELS[0]
+}
+
+export function getAntigravityLlmModel(id?: string | null): ModelOption {
+  return ANTIGRAVITY_LLM_MODELS.find((m) => m.id === id) ?? ANTIGRAVITY_LLM_MODELS[0]
 }

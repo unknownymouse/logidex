@@ -40,14 +40,17 @@ export async function testKey(key?: string, urlOverride?: string): Promise<KeyTe
   try {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), 6000)
-    // Check models endpoint or root endpoint
-    let res: Response
-    try {
-      res = await fetch(`${base}/v1/models`, { headers, signal: controller.signal })
-    } catch {
-      res = await fetch(`${base}/models`, { headers, signal: controller.signal })
+    let res: Response | null = null
+    for (const ep of ['/v1/models', '/models', '/v1beta/models', '/health', '/']) {
+      try {
+        res = await fetch(`${base}${ep}`, { headers, signal: controller.signal })
+        if (res.ok || res.status === 401 || res.status === 403) break
+      } catch {
+        // try next endpoint
+      }
     }
     clearTimeout(timer)
+    if (!res) throw new Error('Tidak ada respons dari proxy Antigravity. Pastikan proxy lokal sudah berjalan.')
     if (res.ok) {
       return { ok: true, message: `Terhubung ke Antigravity Proxy (${base})` }
     }
@@ -68,23 +71,145 @@ export function listVoices(): VoiceOption[] {
   }))
 }
 
+import { extractJson } from './json'
+
 export {
   ANTIGRAVITY_IMAGE_MODELS,
   ANTIGRAVITY_VIDEO_MODELS,
   ANTIGRAVITY_TTS_MODELS,
+  ANTIGRAVITY_LLM_MODELS,
   getAntigravityImageModel,
-  getAntigravityVideoModel
+  getAntigravityVideoModel,
+  getAntigravityLlmModel
 } from '@shared/antigravity'
 import {
   ANTIGRAVITY_IMAGE_MODELS,
   ANTIGRAVITY_VIDEO_MODELS,
-  ANTIGRAVITY_TTS_MODELS
+  ANTIGRAVITY_TTS_MODELS,
+  ANTIGRAVITY_LLM_MODELS
 } from '@shared/antigravity'
 
-export function listModels(kind: 'image' | 'video' | 'tts'): ModelOption[] {
+export function listModels(kind: 'text' | 'image' | 'video' | 'tts'): ModelOption[] {
+  if (kind === 'text') return ANTIGRAVITY_LLM_MODELS
   if (kind === 'image') return ANTIGRAVITY_IMAGE_MODELS
   if (kind === 'video') return ANTIGRAVITY_VIDEO_MODELS
   return ANTIGRAVITY_TTS_MODELS
+}
+
+/**
+ * Structured JSON generation for story scripts and plans using Antigravity Auth relay.
+ * Supports OpenAI /v1/chat/completions format with automatic fallback to Gemini native :generateContent.
+ */
+export async function generateJson(
+  model: string,
+  system: string,
+  prompt: string,
+  schema: object,
+  signal?: AbortSignal
+): Promise<unknown> {
+  const base = baseUrl()
+  const headers = authHeaders()
+  const m = model || 'gemini-2.5-flash'
+
+  // Attempt 1: OpenAI chat completions (/v1/chat/completions or /chat/completions)
+  const openAiBody = {
+    model: m,
+    messages: [
+      { role: 'system', content: `${system}\n\nReturn a valid JSON object matching the requested schema.` },
+      { role: 'user', content: prompt }
+    ],
+    response_format: { type: 'json_object' }
+  }
+
+  for (const path of ['/v1/chat/completions', '/chat/completions']) {
+    try {
+      const res = await fetch(`${base}${path}`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(openAiBody),
+        signal
+      })
+      if (res.ok) {
+        const json = (await res.json()) as any
+        const text = json?.choices?.[0]?.message?.content ?? ''
+        if (text) {
+          try {
+            return extractJson(text)
+          } catch {
+            return JSON.parse(text)
+          }
+        }
+      }
+    } catch {
+      // try next
+    }
+  }
+
+  // Attempt 2: Google Gemini generateContent format
+  const geminiBody = {
+    systemInstruction: { parts: [{ text: system }] },
+    contents: [{ role: 'user', parts: [{ text: `${prompt}\n\nReply with ONE valid JSON object only.` }] }],
+    generationConfig: {
+      responseMimeType: 'application/json'
+    }
+  }
+
+  for (const path of [
+    `/v1beta/models/${m}:generateContent`,
+    `/v1/models/${m}:generateContent`,
+    `/models/${m}:generateContent`
+  ]) {
+    try {
+      const res = await fetch(`${base}${path}`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(geminiBody),
+        signal
+      })
+      if (res.ok) {
+        const json = (await res.json()) as any
+        const text = json?.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
+        if (text) {
+          try {
+            return extractJson(text)
+          } catch {
+            return JSON.parse(text)
+          }
+        }
+      }
+    } catch {
+      // try next
+    }
+  }
+
+  // Attempt 3: Schema in prompt fallback
+  const fallbackPrompt = `${prompt}\n\nReply with ONE JSON object only (no markdown, no commentary) matching this schema:\n${JSON.stringify(schema)}`
+  const fallbackBody = {
+    model: m,
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: fallbackPrompt }
+    ]
+  }
+  for (const path of ['/v1/chat/completions', '/chat/completions']) {
+    try {
+      const res = await fetch(`${base}${path}`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(fallbackBody),
+        signal
+      })
+      if (res.ok) {
+        const json = (await res.json()) as any
+        const text = json?.choices?.[0]?.message?.content ?? ''
+        if (text) return extractJson(text)
+      }
+    } catch {
+      // try next
+    }
+  }
+
+  throw new Error(`Tidak bisa menyusun cerita dengan model "${m}" lewat Antigravity. Pastikan proxy berjalan dan model tersedia.`)
 }
 
 /**

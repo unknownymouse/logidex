@@ -383,7 +383,11 @@ function LlmSection({ settings, statusOf, onChanged, onSettings }: { settings: A
   const status = statusOf(provider)
   const configured = !!status?.configured
   const [openPicker, setOpenPicker] = useState(false)
-  const models = useModels(provider, configured && status?.lastOk !== false, provider === 'custom' ? settings.customBaseUrl : '')
+  const models = useModels(
+    provider,
+    configured && status?.lastOk !== false,
+    provider === 'custom' ? settings.customBaseUrl : provider === 'antigravity' ? settings.antigravityBaseUrl : ''
+  )
   const model = settings.llmModels[provider]
   const selected = models.models.find((m) => m.id === model)
 
@@ -415,11 +419,23 @@ function LlmSection({ settings, statusOf, onChanged, onSettings }: { settings: A
           provider={provider}
           name={spec.name}
           status={status}
-          help={provider === 'custom' ? 'Contoh: http://localhost:11434/v1 untuk Ollama, http://localhost:1234/v1 untuk LM Studio, https://api.x.ai/v1 untuk Grok.' : 'Setelah kunci disimpan, daftar model diambil langsung dari penyedianya.'}
-          hint={provider === 'gemini' && settings.defaultTtsProvider === 'gemini' ? 'Kunci ini dipakai bersama untuk suara narator Gemini TTS.' : undefined}
+          help={
+            provider === 'custom'
+              ? 'Contoh: http://localhost:11434/v1 untuk Ollama, http://localhost:1234/v1 untuk LM Studio, https://api.x.ai/v1 untuk Grok.'
+              : provider === 'antigravity'
+                ? 'Proxy relay Antigravity Auth lokal (bawaan: http://127.0.0.1:8045).'
+                : 'Setelah kunci disimpan, daftar model diambil langsung dari penyedianya.'
+          }
+          hint={
+            provider === 'gemini' && settings.defaultTtsProvider === 'gemini'
+              ? 'Kunci ini dipakai bersama untuk suara narator Gemini TTS.'
+              : provider === 'antigravity'
+                ? 'Koneksi dan kunci ini dipakai bersama untuk Penyusun cerita, Suara narator (TTS), Gambar (Imagen 3), dan Video (Veo 2).'
+                : undefined
+          }
           link={spec.link}
           linkLabel={spec.linkLabel}
-          customUrl={settings.customBaseUrl}
+          customUrl={provider === 'custom' ? settings.customBaseUrl : provider === 'antigravity' ? settings.antigravityBaseUrl : undefined}
           onChanged={onChanged}
           onSaved={async (r) => {
             if (!r.ok) return
@@ -443,7 +459,7 @@ function LlmSection({ settings, statusOf, onChanged, onSettings }: { settings: A
                 toast('success', `Cerita akan disusun oleh ${spec.name} · ${id}`)
               }}
               onRefresh={() => void models.refresh()}
-              allowCustom={provider === 'custom'}
+              allowCustom={provider === 'custom' || provider === 'antigravity'}
               defaultOpen={openPicker}
               placeholder="Pilih model dari daftar"
             />
@@ -605,6 +621,8 @@ function AntigravitySection({
   onSettings: (s: AppSettings) => void
 }) {
   const ready = !!status?.configured && status.lastOk !== false
+  const llmModels = useModels('antigravity', ready, settings.antigravityBaseUrl)
+  const ttsModels = useModels('antigravity-tts', ready)
   const imageModels = useModels('antigravity-image', ready)
   const videoModels = useModels('antigravity-video', ready)
 
@@ -612,8 +630,8 @@ function AntigravitySection({
     <>
       <SectionTitle
         icon={<ProviderLogo id="antigravity" size={20} />}
-        title="Antigravity Auth (Gambar & Video AI)"
-        sub="Relay lokal untuk Imagen 3 (gambar klip) dan Veo 2 (video AI) serta Gemini TTS."
+        title="Antigravity Auth (Cerita, Suara, Gambar & Video)"
+        sub="Relay lokal satu pintu untuk model AI Gemini (naskah cerita & narator TTS), Imagen 3 (gambar klip), dan Veo 2 (video AI)."
       />
       <Card>
         <div className="flex items-center gap-3">
@@ -636,36 +654,73 @@ function AntigravitySection({
           onSaved={async (r) => {
             if (r.ok) {
               onSettings(await window.api.settings.get())
+              void llmModels.refresh()
+              void ttsModels.refresh()
               void imageModels.refresh()
               void videoModels.refresh()
             }
           }}
         />
         {ready && (
-          <div className="grid grid-cols-2 gap-4 border-t border-dashed border-line pt-4">
-            <div className="flex flex-col gap-1.5">
-              <span className="text-sm font-semibold">Model gambar Antigravity (Imagen)</span>
-              <ModelPicker
-                value={settings.antigravityImageModel}
-                models={imageModels.models}
-                loading={imageModels.loading}
-                error={imageModels.error}
-                fetchedAt={imageModels.fetchedAt}
-                onChange={async (id) => onSettings(await window.api.settings.set({ antigravityImageModel: id }))}
-                onRefresh={() => void imageModels.refresh()}
-              />
+          <div className="flex flex-col gap-4 border-t border-dashed border-line pt-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="flex flex-col gap-1.5">
+                <span className="text-sm font-semibold">Model penyusun cerita (Naskah)</span>
+                <ModelPicker
+                  value={settings.llmModels.antigravity}
+                  models={llmModels.models}
+                  loading={llmModels.loading}
+                  error={llmModels.error}
+                  fetchedAt={llmModels.fetchedAt}
+                  onChange={async (id) =>
+                    onSettings(await window.api.settings.set({ llmModels: { ...settings.llmModels, antigravity: id } }))
+                  }
+                  onRefresh={() => void llmModels.refresh()}
+                  allowCustom
+                  placeholder="Pilih model cerita"
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <span className="text-sm font-semibold">Model suara narator (TTS)</span>
+                <ModelPicker
+                  value={settings.antigravityTtsModel}
+                  models={ttsModels.models}
+                  loading={ttsModels.loading}
+                  error={ttsModels.error}
+                  fetchedAt={ttsModels.fetchedAt}
+                  onChange={async (id) => onSettings(await window.api.settings.set({ antigravityTtsModel: id }))}
+                  onRefresh={() => void ttsModels.refresh()}
+                  placeholder="Pilih model suara"
+                />
+              </div>
             </div>
-            <div className="flex flex-col gap-1.5">
-              <span className="text-sm font-semibold">Model video Antigravity (Veo)</span>
-              <ModelPicker
-                value={settings.antigravityVideoModel}
-                models={videoModels.models}
-                loading={videoModels.loading}
-                error={videoModels.error}
-                fetchedAt={videoModels.fetchedAt}
-                onChange={async (id) => onSettings(await window.api.settings.set({ antigravityVideoModel: id }))}
-                onRefresh={() => void videoModels.refresh()}
-              />
+            <div className="grid grid-cols-2 gap-4">
+              <div className="flex flex-col gap-1.5">
+                <span className="text-sm font-semibold">Model gambar (Imagen 3)</span>
+                <ModelPicker
+                  value={settings.antigravityImageModel}
+                  models={imageModels.models}
+                  loading={imageModels.loading}
+                  error={imageModels.error}
+                  fetchedAt={imageModels.fetchedAt}
+                  onChange={async (id) => onSettings(await window.api.settings.set({ antigravityImageModel: id }))}
+                  onRefresh={() => void imageModels.refresh()}
+                  placeholder="Pilih model gambar"
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <span className="text-sm font-semibold">Model video AI (Veo 2)</span>
+                <ModelPicker
+                  value={settings.antigravityVideoModel}
+                  models={videoModels.models}
+                  loading={videoModels.loading}
+                  error={videoModels.error}
+                  fetchedAt={videoModels.fetchedAt}
+                  onChange={async (id) => onSettings(await window.api.settings.set({ antigravityVideoModel: id }))}
+                  onRefresh={() => void videoModels.refresh()}
+                  placeholder="Pilih model video"
+                />
+              </div>
             </div>
           </div>
         )}

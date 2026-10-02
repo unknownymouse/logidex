@@ -9,6 +9,13 @@ export const LLM_PROVIDERS: { id: LlmProvider; name: string; note: string; link:
     linkLabel: 'Buat kunci di Google AI Studio'
   },
   {
+    id: 'antigravity',
+    name: 'Antigravity Auth',
+    note: 'Proxy lokal untuk model Gemini (flash/pro), Imagen 3, Veo 2, dan Gemini TTS.',
+    link: null,
+    linkLabel: ''
+  },
+  {
     id: 'openrouter',
     name: 'OpenRouter',
     note: 'Satu kunci untuk ratusan model dari banyak penyedia, termasuk model gratis.',
