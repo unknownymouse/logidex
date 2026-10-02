@@ -16,7 +16,7 @@ if errorlevel 1 (
 )
 
 rem Pertama kali dibuka, atau folder node_modules berasal dari OS lain: pasang ulang.
-if not exist "node_modules\.bangstory-windows" (
+if not exist "node_modules\.logidex-windows" (
   if exist "node_modules" (
     echo  Membersihkan node_modules lama...
     rmdir /s /q "node_modules"
@@ -32,7 +32,7 @@ if not exist "node_modules\.bangstory-windows" (
     pause
     exit /b 1
   )
-  echo ok> "node_modules\.bangstory-windows"
+  echo ok> "node_modules\.logidex-windows"
 )
 
 rem Electron mengunduh programnya sendiri saat pertama dipakai.

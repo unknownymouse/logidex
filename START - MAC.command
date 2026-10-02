@@ -17,7 +17,7 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 # Pertama kali dibuka, atau folder node_modules berasal dari OS lain: pasang ulang.
-if [ ! -f "node_modules/.bangstory-mac" ]; then
+if [ ! -f "node_modules/.logidex-mac" ]; then
   if [ -d "node_modules" ]; then
     echo " Membersihkan node_modules lama..."
     rm -rf node_modules
@@ -32,7 +32,7 @@ if [ ! -f "node_modules/.bangstory-mac" ]; then
     read -r -p " Tekan Enter untuk menutup..."
     exit 1
   fi
-  echo ok > node_modules/.bangstory-mac
+  echo ok > node_modules/.logidex-mac
 fi
 
 # Electron mengunduh programnya sendiri saat pertama dipakai.
