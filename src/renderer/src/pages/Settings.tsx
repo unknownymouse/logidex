@@ -130,6 +130,7 @@ function KeyForm({
   provider,
   name,
   status,
+  allowOAuth = false,
   label = 'API key',
   placeholder = 'Tempel API key',
   hint,
@@ -143,6 +144,7 @@ function KeyForm({
   provider: ApiProvider
   name: string
   status?: KeyStatus
+  allowOAuth?: boolean
   label?: string
   placeholder?: string
   hint?: ReactNode
@@ -165,6 +167,53 @@ function KeyForm({
   const [revealed, setRevealed] = useState<string | null>(null)
   const [showTyped, setShowTyped] = useState(false)
   const [busy, setBusy] = useState<'save' | 'test' | null>(null)
+
+  const [oauthStatus, setOauthStatus] = useState<{ connected: boolean; email?: string } | null>(null)
+  const [oauthBusy, setOauthBusy] = useState(false)
+
+  const reloadOAuth = () => {
+    if (allowOAuth) {
+      window.api.settings.googleOAuthStatus().then(setOauthStatus).catch(() => setOauthStatus(null))
+    }
+  }
+
+  useEffect(() => {
+    reloadOAuth()
+  }, [provider, allowOAuth])
+
+  const handleGoogleOAuth = async () => {
+    setOauthBusy(true)
+    toast('info', 'Membuka peramban untuk otentikasi Google OAuth…')
+    try {
+      const res = await window.api.settings.startGoogleOAuth()
+      if (res.ok) {
+        toast('success', `Berhasil terhubung dengan Google (${res.email || 'Akun Google'})!`)
+        reloadOAuth()
+        onChanged()
+        onSaved?.({ ok: true, message: `Terhubung via Google OAuth (${res.email})` })
+      } else {
+        toast('error', res.message || 'Login dibatalkan.')
+      }
+    } catch (e) {
+      toast('error', errorText(e))
+    } finally {
+      setOauthBusy(false)
+    }
+  }
+
+  const handleDisconnectOAuth = async () => {
+    const ok = await confirmDialog({
+      title: 'Putuskan sesi Google OAuth?',
+      body: 'Sesi akun Google kamu akan dihapus dari Logidex.',
+      confirm: 'Putuskan',
+      danger: true
+    })
+    if (!ok) return
+    await window.api.settings.disconnectGoogleOAuth()
+    reloadOAuth()
+    onChanged()
+    toast('info', 'Sesi Google OAuth diputuskan.')
+  }
 
   // A newly saved or removed key puts the field back in its resting state.
   useEffect(() => {
@@ -243,6 +292,66 @@ function KeyForm({
 
   return (
     <div className="flex flex-col gap-3">
+      {allowOAuth && (
+        <div className="flex flex-col gap-2.5">
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-line bg-sand/60 px-4 py-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-white shadow-xs border border-line/40">
+                <svg className="size-4" viewBox="0 0 24 24">
+                  <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                  <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                  <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
+                  <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
+                </svg>
+              </span>
+              <div className="flex flex-col min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-[13px] font-semibold text-ink truncate">
+                    {oauthStatus?.connected ? `Akun Google: ${oauthStatus.email}` : 'Masuk 1-Klik Google OAuth'}
+                  </span>
+                  {oauthStatus?.connected && (
+                    <span className="inline-flex items-center gap-1 rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
+                      <Check className="size-3" strokeWidth={3} />
+                      Aktif
+                    </span>
+                  )}
+                </div>
+                <span className="text-xs text-ink-2 truncate">
+                  {oauthStatus?.connected
+                    ? 'Sesi Google aktif dan otomatis diperbarui'
+                    : 'Masuk instan tanpa perlu repot menyalin API key manual'}
+                </span>
+              </div>
+            </div>
+            {oauthStatus?.connected ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-8 shrink-0 text-xs text-bad-ink hover:bg-bad-soft"
+                onClick={() => void handleDisconnectOAuth()}
+              >
+                Putuskan
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant="primary"
+                loading={oauthBusy}
+                onClick={() => void handleGoogleOAuth()}
+                className="h-8 shrink-0 gap-1.5 text-xs font-semibold shadow-xs"
+              >
+                Masuk dengan Google
+              </Button>
+            )}
+          </div>
+          <div className="relative my-0.5 flex items-center justify-center">
+            <div className="w-full border-t border-line/60" />
+            <span className="absolute bg-surface px-2.5 text-[11px] font-medium text-ink-3">
+              {oauthStatus?.connected ? 'atau ganti dengan kunci manual' : 'atau masukkan kunci manual'}
+            </span>
+          </div>
+        </div>
+      )}
       <div className="flex items-end gap-2">
         {hasUrl && (
           <Field label={isAntigravity ? 'Alamat proxy (base URL)' : 'Alamat endpoint (base URL)'} className="flex-[1.3]">
@@ -376,111 +485,6 @@ function SectionTitle({ icon, title, sub }: { icon: ReactNode; title: string; su
   )
 }
 
-function GoogleOAuthCard({ onSuccess }: { onSuccess: () => void }) {
-  const { toast } = useApp()
-  const [loading, setLoading] = useState(false)
-  const [oauthStatus, setOauthStatus] = useState<{ connected: boolean; email?: string; name?: string } | null>(null)
-
-  const refreshStatus = () => {
-    window.api.settings.googleOAuthStatus().then(setOauthStatus).catch(() => setOauthStatus({ connected: false }))
-  }
-
-  useEffect(() => {
-    refreshStatus()
-  }, [])
-
-  const handleLogin = async () => {
-    setLoading(true)
-    toast('info', 'Membuka peramban untuk otentikasi Google OAuth…')
-    try {
-      const res = await window.api.settings.startGoogleOAuth()
-      if (res.ok) {
-        toast('success', `Berhasil terhubung dengan Google (${res.email || 'Akun Google'})!`)
-        refreshStatus()
-        onSuccess()
-      } else {
-        toast('error', res.message || 'Login OAuth dibatalkan.')
-      }
-    } catch (e) {
-      toast('error', errorText(e))
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleDisconnect = async () => {
-    const ok = await confirmDialog({
-      title: 'Putuskan sesi Google OAuth?',
-      body: 'Sesi akun Google kamu akan dihapus dari Logidex.',
-      confirm: 'Putuskan',
-      danger: true
-    })
-    if (!ok) return
-    await window.api.settings.disconnectGoogleOAuth()
-    refreshStatus()
-    onSuccess()
-    toast('info', 'Sesi Google OAuth diputuskan.')
-  }
-
-  return (
-    <div className="rounded-xl border border-line-2 bg-surface-2 p-3.5 mb-1">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2.5">
-          <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-white shadow-xs">
-            <svg className="size-4" viewBox="0 0 24 24">
-              <path
-                fill="#4285F4"
-                d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-              />
-              <path
-                fill="#34A853"
-                d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-              />
-              <path
-                fill="#FBBC05"
-                d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-              />
-              <path
-                fill="#EA4335"
-                d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-              />
-            </svg>
-          </span>
-          <div className="flex flex-col">
-            <span className="text-sm font-bold">Google & Antigravity OAuth (1-Klik)</span>
-            <span className="text-xs text-ink-2">
-              {oauthStatus?.connected
-                ? `Terhubung sebagai ${oauthStatus.email || 'Akun Google'}`
-                : 'Masuk langsung dengan akun Google kamu tanpa perlu menyalin kunci manual'}
-            </span>
-          </div>
-        </div>
-        {oauthStatus?.connected ? (
-          <div className="flex items-center gap-2">
-            <Badge tone="ok">
-              <Check className="size-3" strokeWidth={3} />
-              Aktif
-            </Badge>
-            <Button size="sm" variant="ghost" onClick={() => void handleDisconnect()}>
-              Putuskan
-            </Button>
-          </div>
-        ) : (
-          <Button
-            variant="primary"
-            size="sm"
-            loading={loading}
-            onClick={() => void handleLogin()}
-            className="gap-2 font-semibold shadow-xs"
-          >
-            Masuk dengan Google (OAuth)
-          </Button>
-        )}
-      </div>
-    </div>
-  )
-}
-
 function LlmSection({ settings, statusOf, onChanged, onSettings }: { settings: AppSettings; statusOf: (p: ApiProvider) => KeyStatus | undefined; onChanged: () => void; onSettings: (s: AppSettings) => void }) {
   const { toast } = useApp()
   const provider = settings.llmProvider
@@ -520,18 +524,11 @@ function LlmSection({ settings, statusOf, onChanged, onSettings }: { settings: A
         }}
       />
       <Card key={provider}>
-        {(provider === 'gemini' || provider === 'antigravity') && (
-          <GoogleOAuthCard
-            onSuccess={() => {
-              onChanged()
-              void models.refresh()
-            }}
-          />
-        )}
         <KeyForm
           provider={provider}
           name={spec.name}
           status={status}
+          allowOAuth={provider === 'gemini' || provider === 'antigravity'}
           help={
             provider === 'custom'
               ? 'Contoh: http://localhost:11434/v1 untuk Ollama, http://localhost:1234/v1 untuk LM Studio, https://api.x.ai/v1 untuk Grok.'
@@ -553,7 +550,7 @@ function LlmSection({ settings, statusOf, onChanged, onSettings }: { settings: A
           onSaved={async (r) => {
             if (!r.ok) return
             onSettings(await window.api.settings.get())
-            if (configured) void models.refresh()
+            void models.refresh()
             if (!model) setOpenPicker(true)
           }}
         />
@@ -734,8 +731,6 @@ function AntigravitySection({
   onSettings: (s: AppSettings) => void
 }) {
   const ready = !!status?.configured && status.lastOk !== false
-  const llmModels = useModels('antigravity', ready, settings.antigravityBaseUrl)
-  const ttsModels = useModels('antigravity-tts', ready)
   const imageModels = useModels('antigravity-image', ready)
   const videoModels = useModels('antigravity-video', ready)
 
@@ -743,8 +738,8 @@ function AntigravitySection({
     <>
       <SectionTitle
         icon={<ProviderLogo id="antigravity" size={20} />}
-        title="Antigravity Auth (Cerita, Suara, Gambar & Video)"
-        sub="Relay lokal satu pintu untuk model AI Gemini (naskah cerita & narator TTS), Imagen 3 (gambar klip), dan Veo 2 (video AI)."
+        title="Gambar dan video (Antigravity Auth)"
+        sub="Penyedia alternatif untuk membuat gambar Imagen 3 dan video Veo 2 melalui Google Cloud atau proxy Antigravity."
       />
       <Card>
         <div className="flex items-center gap-3">
@@ -755,70 +750,29 @@ function AntigravitySection({
           </div>
           <StatusBadge status={status} />
         </div>
-        <GoogleOAuthCard
-          onSuccess={() => {
-            onChanged()
-            void llmModels.refresh()
-            void ttsModels.refresh()
-            void imageModels.refresh()
-            void videoModels.refresh()
-          }}
-        />
         <KeyForm
           provider="antigravity"
           name="Antigravity Auth"
           status={status}
+          allowOAuth
           customUrl={settings.antigravityBaseUrl || 'http://127.0.0.1:8045'}
-          help="Masukkan alamat proxy lokal Antigravity (bawaan: http://127.0.0.1:8045). Kunci atau token hanya diperlukan bila proxy kamu memintanya."
+          help="Alamat proxy lokal Antigravity (bawaan: http://127.0.0.1:8045). Jika sudah login Google OAuth, token otomatis digunakan."
           link={null}
           linkLabel=""
           onChanged={onChanged}
           onSaved={async (r) => {
             if (r.ok) {
               onSettings(await window.api.settings.get())
-              void llmModels.refresh()
-              void ttsModels.refresh()
               void imageModels.refresh()
               void videoModels.refresh()
             }
           }}
         />
         {ready && (
-          <div className="flex flex-col gap-4 border-t border-dashed border-line pt-4">
+          <div className="flex flex-col gap-3.5 border-t border-dashed border-line pt-4">
             <div className="grid grid-cols-2 gap-4">
               <div className="flex flex-col gap-1.5">
-                <span className="text-sm font-semibold">Model penyusun cerita (Naskah)</span>
-                <ModelPicker
-                  value={settings.llmModels.antigravity}
-                  models={llmModels.models}
-                  loading={llmModels.loading}
-                  error={llmModels.error}
-                  fetchedAt={llmModels.fetchedAt}
-                  onChange={async (id) =>
-                    onSettings(await window.api.settings.set({ llmModels: { ...settings.llmModels, antigravity: id } }))
-                  }
-                  onRefresh={() => void llmModels.refresh()}
-                  allowCustom
-                  placeholder="Pilih model cerita"
-                />
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <span className="text-sm font-semibold">Model suara narator (TTS)</span>
-                <ModelPicker
-                  value={settings.antigravityTtsModel}
-                  models={ttsModels.models}
-                  loading={ttsModels.loading}
-                  error={ttsModels.error}
-                  fetchedAt={ttsModels.fetchedAt}
-                  onChange={async (id) => onSettings(await window.api.settings.set({ antigravityTtsModel: id }))}
-                  onRefresh={() => void ttsModels.refresh()}
-                  placeholder="Pilih model suara"
-                />
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="flex flex-col gap-1.5">
-                <span className="text-sm font-semibold">Model gambar (Imagen 3)</span>
+                <span className="text-sm font-semibold">Model gambar Antigravity (Imagen)</span>
                 <ModelPicker
                   value={settings.antigravityImageModel}
                   models={imageModels.models}
@@ -831,7 +785,7 @@ function AntigravitySection({
                 />
               </div>
               <div className="flex flex-col gap-1.5">
-                <span className="text-sm font-semibold">Model video AI (Veo 2)</span>
+                <span className="text-sm font-semibold">Model video Antigravity (Veo)</span>
                 <ModelPicker
                   value={settings.antigravityVideoModel}
                   models={videoModels.models}
@@ -844,6 +798,14 @@ function AntigravitySection({
                 />
               </div>
             </div>
+            <p className="flex items-start gap-2 text-[13px] leading-relaxed text-ink-2">
+              <Film className="mt-0.5 size-4 shrink-0 text-muted" />
+              <span>
+                Model naskah dan suara Antigravity dapat diatur di bagian <strong className="text-ink">Penyusun cerita</strong> dan{' '}
+                <strong className="text-ink">Suara narator</strong> di atas. Pilihan penyedia gambar dan video bawaan untuk proyek baru ada di tab{' '}
+                <strong className="text-ink">Umum</strong>.
+              </span>
+            </p>
           </div>
         )}
       </Card>

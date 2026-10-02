@@ -9,8 +9,7 @@ const SCOPES = [
   'openid',
   'email',
   'profile',
-  'https://www.googleapis.com/auth/cloud-platform',
-  'https://www.googleapis.com/auth/generative-language'
+  'https://www.googleapis.com/auth/cloud-platform'
 ].join(' ')
 
 interface StoredTokens {

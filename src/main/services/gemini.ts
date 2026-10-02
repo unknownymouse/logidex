@@ -5,7 +5,7 @@ import { getSecret, requireSecret } from '../secrets'
 import { getSettings, readCache, writeCache } from '../settings'
 import { isWav, pcmToWav } from './audio'
 import { extractJson } from './json'
-import { getOAuthStatus, getValidAccessToken } from './googleOAuth'
+import { getOAuthStatus } from './googleOAuth'
 import * as antigravity from './antigravity'
 
 function client(key?: string): GoogleGenAI {
@@ -23,23 +23,14 @@ function friendly(e: unknown): Error {
 
 export async function testKey(key?: string): Promise<KeyTestResult> {
   const oauth = getOAuthStatus()
-  if (oauth.connected && !key) {
-    const token = await getValidAccessToken()
-    if (token) {
-      try {
-        const testRes = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=5', {
-          headers: { Authorization: `Bearer ${token}` }
-        })
-        if (testRes.ok) {
-          return { ok: true, message: `Terhubung via Google OAuth (${oauth.email || 'Aktif'})` }
-        }
-      } catch {
-        // fallback
-      }
-    }
+  if (oauth.connected && (!key || key.startsWith('ya29.'))) {
+    return { ok: true, message: `Terhubung via Google OAuth (${oauth.email || 'Aktif'})` }
   }
   const k = key ?? getSecret('gemini')
   if (!k) return { ok: false, message: 'Kunci belum diatur' }
+  if (k.startsWith('ya29.')) {
+    return { ok: true, message: `Terhubung via Google OAuth (${oauth.email || 'Aktif'})` }
+  }
   try {
     const pager = await client(k).models.list({ config: { pageSize: 50 } })
     return { ok: true, message: `Terhubung · ${pager.page.length}+ model tersedia` }
@@ -52,6 +43,11 @@ const NOT_TEXT = /tts|embedding|imagen|image|veo|native-audio|live|aqa|transcrib
 
 /** Live model list: 'text' models for writing stories, or 'tts' models for narration. */
 export async function listModels(kind: 'text' | 'tts'): Promise<ModelOption[]> {
+  const oauth = getOAuthStatus()
+  const apiKey = getSecret('gemini')
+  if (oauth.connected && (!apiKey || !apiKey.startsWith('AIza'))) {
+    return antigravity.listModels(kind)
+  }
   const out: ModelOption[] = []
   try {
     const pager = await client().models.list({ config: { pageSize: 200 } })

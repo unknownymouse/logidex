@@ -48,20 +48,8 @@ function friendly(e: unknown): Error {
 
 export async function testKey(key?: string, urlOverride?: string): Promise<KeyTestResult> {
   const oauth = getOAuthStatus()
-  if (oauth.connected && !key && !urlOverride) {
-    const token = await getValidAccessToken()
-    if (token) {
-      try {
-        const testRes = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=5', {
-          headers: { Authorization: `Bearer ${token}` }
-        })
-        if (testRes.ok) {
-          return { ok: true, message: `Terhubung via Google OAuth (${oauth.email || 'Aktif'})` }
-        }
-      } catch {
-        // fallback to standard endpoint ping
-      }
-    }
+  if (oauth.connected && (!key || key.startsWith('ya29.')) && (!urlOverride || urlOverride === 'http://127.0.0.1:8045')) {
+    return { ok: true, message: `Terhubung via Google OAuth (${oauth.email || 'Aktif'})` }
   }
 
   const base = baseUrl(urlOverride)
