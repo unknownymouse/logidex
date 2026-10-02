@@ -1,4 +1,6 @@
 import crypto from 'node:crypto'
+import { execFile } from 'node:child_process'
+import ffmpegStatic from 'ffmpeg-static'
 import { AspectRatio, KeyTestResult, ModelOption, VoiceOption } from '@shared/types'
 import { GEMINI_VOICES, geminiVoiceName, geminiVoiceTone } from '@shared/models'
 import {
@@ -7,6 +9,7 @@ import {
   ANTIGRAVITY_TTS_MODELS,
   ANTIGRAVITY_LLM_MODELS
 } from '@shared/antigravity'
+import { binPath } from '../paths'
 import { getSecret } from '../secrets'
 import { getSettings } from '../settings'
 import { isWav, pcmToWav } from './audio'
@@ -517,14 +520,144 @@ export async function generateVideo(
   throw new Error('Google Veo di Antigravity saat ini belum menghasilkan video. Kamu bisa menggunakan Higgsfield untuk video.')
 }
 
+function splitSentenceChunks(text: string, maxLen = 150): string[] {
+  const parts: string[] = []
+  const sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [text]
+  for (const s of sentences) {
+    const trimmed = s.trim()
+    if (!trimmed) continue
+    if (trimmed.length <= maxLen) {
+      parts.push(trimmed)
+    } else {
+      const words = trimmed.split(/\s+/)
+      let cur = ''
+      for (const w of words) {
+        if ((cur + ' ' + w).trim().length <= maxLen) {
+          cur = (cur + ' ' + w).trim()
+        } else {
+          if (cur) parts.push(cur)
+          cur = w
+        }
+      }
+      if (cur) parts.push(cur)
+    }
+  }
+  return parts
+}
+
+async function synthesizeGoogleTts(text: string, lang = 'id', signal?: AbortSignal): Promise<Buffer> {
+  const url = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(text)}&tl=${lang}&client=tw-ob`
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'Mozilla/5.0' },
+    signal
+  })
+  if (!res.ok) throw new Error(`Google TTS gagal dengan kode status ${res.status}`)
+  return Buffer.from(await res.arrayBuffer())
+}
+
+function makeSilenceWav(durationSec: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      binPath(ffmpegStatic!),
+      ['-hide_banner', '-f', 'lavfi', '-i', 'anullsrc=r=24000:cl=mono', '-t', String(durationSec), '-f', 'wav', 'pipe:1'],
+      { encoding: 'buffer', maxBuffer: 10 * 1024 * 1024, windowsHide: true },
+      (err, stdout) => {
+        if (err) reject(err)
+        else resolve(stdout as unknown as Buffer)
+      }
+    )
+  })
+}
+
+function mp3To24kWav(mp3Buf: Buffer, signal?: AbortSignal): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const p = execFile(
+      binPath(ffmpegStatic!),
+      ['-hide_banner', '-i', 'pipe:0', '-f', 'wav', '-ac', '1', '-ar', '24000', 'pipe:1'],
+      { encoding: 'buffer', maxBuffer: 10 * 1024 * 1024, windowsHide: true },
+      (err, stdout) => {
+        if (signal?.aborted) return reject(new Error('Dibatalkan'))
+        if (err) reject(err)
+        else resolve(stdout as unknown as Buffer)
+      }
+    )
+    if (signal) {
+      signal.addEventListener('abort', () => p.kill('SIGKILL'), { once: true })
+    }
+    p.stdin?.write(mp3Buf)
+    p.stdin?.end()
+  })
+}
+
+function concatWavBuffers(wavBuffers: Buffer[]): Buffer {
+  if (wavBuffers.length === 0) return Buffer.alloc(0)
+  if (wavBuffers.length === 1) return wavBuffers[0]
+  const pcmChunks = wavBuffers.map((b) => b.subarray(44))
+  const combinedPcm = Buffer.concat(pcmChunks)
+  const header = Buffer.alloc(44)
+  const dataLen = combinedPcm.length
+  const fileLen = dataLen + 36
+  header.write('RIFF', 0)
+  header.writeUInt32LE(fileLen, 4)
+  header.write('WAVE', 8)
+  header.write('fmt ', 12)
+  header.writeUInt32LE(16, 16)
+  header.writeUInt16LE(1, 20)
+  header.writeUInt16LE(1, 22)
+  header.writeUInt32LE(24000, 24)
+  header.writeUInt32LE(48000, 28)
+  header.writeUInt16LE(2, 32)
+  header.writeUInt16LE(16, 34)
+  header.write('data', 36)
+  header.writeUInt32LE(dataLen, 40)
+  return Buffer.concat([header, combinedPcm])
+}
+
+async function synthesizeAntigravityTts(
+  text: string,
+  languageCode: string,
+  signal?: AbortSignal
+): Promise<Buffer> {
+  const lang = (languageCode || 'id').toLowerCase().split(/[-_]/)[0]
+  const rawParts = text.split(/(<long pause>|<short pause>|\n+)/g).filter((p) => p && p.trim())
+  const wavBuffers: Buffer[] = []
+
+  for (const part of rawParts) {
+    if (signal?.aborted) throw new Error('Dibatalkan')
+    const trimmed = part.trim()
+    if (!trimmed) continue
+    if (trimmed === '<long pause>') {
+      wavBuffers.push(await makeSilenceWav(1.2))
+    } else if (trimmed === '<short pause>') {
+      wavBuffers.push(await makeSilenceWav(0.4))
+    } else {
+      const clean = trimmed.replace(/<[^>]+>/g, '').trim()
+      if (!clean) continue
+      const chunks = splitSentenceChunks(clean, 150)
+      for (const chunk of chunks) {
+        if (signal?.aborted) throw new Error('Dibatalkan')
+        const mp3 = await synthesizeGoogleTts(chunk, lang, signal)
+        const wav = await mp3To24kWav(mp3, signal)
+        wavBuffers.push(wav)
+      }
+    }
+  }
+
+  if (wavBuffers.length === 0) {
+    throw new Error('Teks narasi kosong.')
+  }
+
+  return concatWavBuffers(wavBuffers)
+}
+
 /**
- * Generates speech audio using Google Gemini TTS directly via Antigravity OAuth.
- * Returns WAV audio buffer.
+ * Generates speech audio using Google TTS via Antigravity OAuth or Gemini API Key.
+ * Returns standard 24kHz mono 16-bit WAV audio buffer.
  */
 export async function speak(
   text: string,
   voice: string,
-  _languageCode: string,
+  languageCode: string,
   signal?: AbortSignal
 ): Promise<Buffer> {
   const token = await getValidAccessToken()
@@ -556,39 +689,16 @@ export async function speak(
       }),
       signal
     })
-    if (!res.ok) {
-      const errJson = (await res.json().catch(() => null)) as any
-      throw new Error(errJson?.error?.message || `HTTP ${res.status}`)
-    }
-    const data = (await res.json()) as any
-    const b64 = data?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data
-    if (b64) {
-      const raw = Buffer.from(b64, 'base64')
-      return isWav(raw) ? raw : pcmToWav(raw)
-    }
-    throw new Error('Google Gemini TTS tidak mengembalikan data audio.')
-  }
-
-  const model = getSettings().antigravityTtsModel || 'gemini-2.5-flash'
-  const requestPayload = {
-    contents: [{ role: 'user', parts: [{ text }] }],
-    generationConfig: {
-      responseModalities: ['AUDIO'],
-      speechConfig: {
-        voiceConfig: {
-          prebuiltVoiceConfig: { voiceName: voice || 'Charon' }
-        }
+    if (res.ok) {
+      const data = (await res.json()) as any
+      const b64 = data?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data
+      if (b64) {
+        const raw = Buffer.from(b64, 'base64')
+        return isWav(raw) ? raw : pcmToWav(raw)
       }
     }
   }
 
-  const data = await callAntigravityApi('generateContent', model, requestPayload, signal)
-  const parts = data?.response?.candidates?.[0]?.content?.parts || data?.candidates?.[0]?.content?.parts || []
-  const audioPart = parts.find((p: any) => p.inlineData?.data)
-  if (audioPart?.inlineData?.data) {
-    const raw = Buffer.from(audioPart.inlineData.data, 'base64')
-    return isWav(raw) ? raw : pcmToWav(raw)
-  }
-
-  throw new Error('Google Gemini TTS di Antigravity tidak mengembalikan data audio.')
+  // Antigravity Google TTS pipeline with high-precision pause & silence generation
+  return synthesizeAntigravityTts(text, languageCode, signal)
 }

@@ -18,11 +18,16 @@ import {
   Trash2,
   Volume2
 } from 'lucide-react'
-import { effectiveResolution, fitDuration, getImageModel, getVideoModel } from '@shared/higgsfield'
+import { DEFAULT_VIDEO_MODEL, effectiveResolution, fitDuration, getImageModel, getVideoModel } from '@shared/higgsfield'
+import {
+  ANTIGRAVITY_VIDEO_MODELS,
+  DEFAULT_ANTIGRAVITY_VIDEO_MODEL,
+  getAntigravityVideoModel
+} from '@shared/antigravity'
 import { CAMERA_PRESETS, MOTION_STRENGTHS, cameraAt, cameraCss } from '@shared/motion'
 import { needsVisual } from '@shared/script'
 import { geminiVoiceName, geminiVoiceTone } from '@shared/models'
-import type { Asset, Clip } from '@shared/types'
+import type { Asset, Clip, VideoProvider } from '@shared/types'
 import { AutoTextarea } from '../../components/AutoTextarea'
 import { CharacterAvatar } from '../../components/CharacterAvatar'
 import { ClipVisual } from '../../components/ClipVisual'
@@ -123,7 +128,9 @@ function ClipPanel({ clip, index, total }: { clip: Clip; index: number; total: n
   const voiceName =
     project.ttsProvider === 'gemini'
       ? `${geminiVoiceName(project.ttsVoice)} · ${geminiVoiceTone(project.ttsVoice) ?? 'Gemini'}`
-      : 'ElevenLabs'
+      : project.ttsProvider === 'antigravity'
+        ? `${geminiVoiceName(project.ttsVoice)} · Antigravity`
+        : 'ElevenLabs'
 
   const run = async (fn: () => Promise<unknown>): Promise<void> => {
     try {
@@ -339,7 +346,13 @@ function ClipPanel({ clip, index, total }: { clip: Clip; index: number; total: n
             {(
               [
                 { id: 'camera', title: 'Gerak kamera', sub: 'Gratis · dirender di komputer', icon: <Move className="size-[22px]" />, subCls: 'text-ok-ink' },
-                { id: 'video', title: 'Video AI', sub: 'Higgsfield · pakai kredit', icon: <Film className="size-[22px]" />, subCls: 'text-ink-2' }
+                {
+                  id: 'video',
+                  title: 'Video AI',
+                  sub: project.videoProvider === 'antigravity' ? 'Antigravity (Veo 2) · Bebas kredit' : 'Higgsfield · pakai kredit',
+                  icon: <Film className="size-[22px]" />,
+                  subCls: project.videoProvider === 'antigravity' ? 'text-ok-ink' : 'text-ink-2'
+                }
               ] as const
             ).map((o) => {
               const on = clip.motionType === o.id
@@ -394,20 +407,65 @@ function ClipPanel({ clip, index, total }: { clip: Clip; index: number; total: n
                 </p>
               )}
               {project && (
-                <div className="flex items-center gap-1.5 text-xs text-ink-2">
-                  <Film className="size-3.5 shrink-0" />
-                  <span className="truncate">
-                    {getVideoModel(project.videoModel).name} · video {fitDuration(getVideoModel(project.videoModel), clip.durationMs / 1000)} detik
-                    {effectiveResolution(getVideoModel(project.videoModel), project.videoResolution) &&
-                      ` · ${effectiveResolution(getVideoModel(project.videoModel), project.videoResolution)}`}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => updateProject({ step: 1 })}
-                    className="shrink-0 font-semibold text-accent-dark hover:underline"
-                  >
-                    Ganti model
-                  </button>
+                <div className="flex flex-col gap-2 rounded-xl border border-line-2 bg-surface-2 p-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-ink-2">Penyedia Video:</span>
+                    <Segmented
+                      size="sm"
+                      value={project.videoProvider ?? 'higgsfield'}
+                      onChange={(p) =>
+                        updateProject({
+                          videoProvider: p as VideoProvider,
+                          videoModel: p === 'antigravity' ? DEFAULT_ANTIGRAVITY_VIDEO_MODEL : DEFAULT_VIDEO_MODEL
+                        })
+                      }
+                      options={[
+                        { id: 'antigravity', label: 'Antigravity (Veo 2)' },
+                        { id: 'higgsfield', label: 'Higgsfield' }
+                      ]}
+                    />
+                  </div>
+
+                  {project.videoProvider === 'antigravity' ? (
+                    <div className="flex flex-col gap-1.5 pt-1">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-ink-2">Model Veo 2:</span>
+                        <div className="flex gap-1">
+                          {ANTIGRAVITY_VIDEO_MODELS.map((m) => (
+                            <Chip
+                              key={m.id}
+                              on={(project.videoModel || DEFAULT_ANTIGRAVITY_VIDEO_MODEL) === m.id}
+                              className="h-7 px-2.5 text-xs"
+                              onClick={() => updateProject({ videoModel: m.id })}
+                            >
+                              {m.name}
+                            </Chip>
+                          ))}
+                        </div>
+                      </div>
+                      <p className="text-[11.5px] text-ok-ink">
+                        ✓ Google Veo 2 via Antigravity OAuth · Bebas kredit Higgsfield
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-between pt-1 text-xs text-ink-2">
+                      <div className="flex items-center gap-1.5 truncate">
+                        <Film className="size-3.5 shrink-0" />
+                        <span className="truncate">
+                          {getVideoModel(project.videoModel).name} · video {fitDuration(getVideoModel(project.videoModel), clip.durationMs / 1000)} detik
+                          {effectiveResolution(getVideoModel(project.videoModel), project.videoResolution) &&
+                            ` · ${effectiveResolution(getVideoModel(project.videoModel), project.videoResolution)}`}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => updateProject({ step: 1 })}
+                        className="shrink-0 font-semibold text-accent-dark hover:underline"
+                      >
+                        Ganti model
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
               <AutoTextarea
@@ -481,10 +539,10 @@ export function StoryboardStep() {
 
   // Video length follows each clip's voice, so the cost is estimated per video length and summed.
   const videoLengths = useMemo(() => {
-    if (!project) return ''
+    if (!project || project.videoProvider === 'antigravity') return ''
     const model = getVideoModel(project.videoModel)
     return stats.needVideo.map((c) => fitDuration(model, c.durationMs / 1000) ?? 5).join(',')
-  }, [stats.needVideo, project?.videoModel])
+  }, [stats.needVideo, project?.videoModel, project?.videoProvider])
   useEffect(() => {
     if (!project || !videoLengths) return setVideoCredits(null)
     const lengths = videoLengths.split(',').map(Number)
@@ -525,15 +583,18 @@ export function StoryboardStep() {
     !narration.running
   const makeVideos = async (): Promise<void> => {
     const n = stats.needVideo.length
+    const isAg = project.videoProvider === 'antigravity'
     const ok = await confirmDialog({
       title: `Jadikan ${n} klip video AI?`,
       body:
-        `Setiap gambar klip dianimasikan dengan ${getVideoModel(project!.videoModel).name}, panjangnya mengikuti suara narasi klip itu.` +
-        (videoCredits != null ? ` Perkiraan biaya ${Math.round(videoCredits * 10) / 10} kredit Higgsfield.` : '') +
+        (isAg
+          ? `Setiap gambar klip dianimasikan dengan ${getAntigravityVideoModel(project.videoModel).name} (Google Veo 2 via Antigravity OAuth), bebas kredit Higgsfield.`
+          : `Setiap gambar klip dianimasikan dengan ${getVideoModel(project.videoModel).name}, panjangnya mengikuti suara narasi klip itu.` +
+            (videoCredits != null ? ` Perkiraan biaya ${Math.round(videoCredits * 10) / 10} kredit Higgsfield.` : '')) +
         ' Klip yang sudah punya video tidak dibuat ulang.',
       confirm: `Buat ${n} video`
     })
-    if (ok) await bulk(() => window.api.generate.missingVideos(project!.id))
+    if (ok) await bulk(() => window.api.generate.missingVideos(project.id))
   }
 
   // Scenes added or rewritten in the script since the last visual plan.
