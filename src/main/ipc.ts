@@ -54,6 +54,7 @@ import * as gemini from './services/gemini'
 import * as hf from './services/higgsfield'
 import * as llm from './services/llm'
 import * as antigravity from './services/antigravity'
+import * as googleOAuth from './services/googleOAuth'
 import { generateScript, generateVisuals, generateMusicPrompt } from './story'
 
 
@@ -237,6 +238,20 @@ export function registerIpc(): void {
     if (provider === 'gemini') return gemini.listVoices()
     if (provider === 'antigravity') return antigravity.listVoices()
     return eleven.listVoices()
+  })
+  handle('settings:startGoogleOAuth', async () => {
+    const res = await googleOAuth.startOAuthLogin()
+    if (res.ok) {
+      dropCache('models:gemini')
+      dropCache('models:antigravity')
+    }
+    return res
+  })
+  handle('settings:googleOAuthStatus', () => googleOAuth.getOAuthStatus())
+  handle('settings:disconnectGoogleOAuth', () => {
+    googleOAuth.disconnectOAuth()
+    dropCache('models:gemini')
+    dropCache('models:antigravity')
   })
 
   handle('export:start', (projectId: string, opts: ExportOptions) => startExport(projectId, opts))

@@ -90,6 +90,26 @@ export function clearSecret(provider: ApiProvider): void {
   getDb().prepare('DELETE FROM secrets WHERE provider = ?').run(provider)
 }
 
+export function setNamedSecret(name: string, value: string): void {
+  const enc = safeStorage.isEncryptionAvailable() ? safeStorage.encryptString(value) : Buffer.from(value, 'utf8')
+  getDb()
+    .prepare(
+      `INSERT INTO secrets (provider, value) VALUES (?, ?)
+       ON CONFLICT(provider) DO UPDATE SET value = excluded.value, last_ok = NULL, last_message = NULL, checked_at = NULL`
+    )
+    .run(name, enc)
+}
+
+export function getNamedSecret(name: string): string | null {
+  const r = getDb().prepare('SELECT * FROM secrets WHERE provider = ?').get(name) as SecretRow | undefined
+  if (!r || r.value.length === 0) return null
+  return decrypt(r.value)
+}
+
+export function clearNamedSecret(name: string): void {
+  getDb().prepare('DELETE FROM secrets WHERE provider = ?').run(name)
+}
+
 /** Test results for the custom endpoint are kept even when it has no key (local servers). */
 export function recordCheck(provider: ApiProvider, ok: boolean, message: string): void {
   const now = Date.now()

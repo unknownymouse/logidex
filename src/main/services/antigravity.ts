@@ -4,18 +4,30 @@ import { getSecret } from '../secrets'
 import { getSettings } from '../settings'
 import { isWav, pcmToWav } from './audio'
 import { downloadTo, sleep } from './http'
+import { getOAuthStatus, getValidAccessToken } from './googleOAuth'
 
 function baseUrl(override?: string): string {
   const raw = override ?? getSettings().antigravityBaseUrl ?? 'http://127.0.0.1:8045'
-  return raw.trim().replace(/\/+$/, '')
+  const trimmed = raw.trim().replace(/\/+$/, '')
+  // If default local proxy is set but OAuth is connected, Google API is used directly
+  if (trimmed === 'http://127.0.0.1:8045' && getOAuthStatus().connected) {
+    return 'https://generativelanguage.googleapis.com'
+  }
+  return trimmed
 }
 
-function authHeaders(keyOverride?: string): Record<string, string> {
-  const key = keyOverride !== undefined ? keyOverride : (getSecret('antigravity') ?? '')
+async function authHeaders(keyOverride?: string): Promise<Record<string, string>> {
+  let key = keyOverride !== undefined ? keyOverride : (getSecret('antigravity') ?? '')
+  if (!key.trim()) {
+    const oauthToken = await getValidAccessToken()
+    if (oauthToken) key = oauthToken
+  }
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (key.trim()) {
     headers['Authorization'] = `Bearer ${key.trim()}`
-    headers['x-goog-api-key'] = key.trim()
+    if (key.trim().startsWith('AIza')) {
+      headers['x-goog-api-key'] = key.trim()
+    }
   }
   return headers
 }
@@ -23,10 +35,10 @@ function authHeaders(keyOverride?: string): Record<string, string> {
 function friendly(e: unknown): Error {
   const msg = (e as Error)?.message ?? String(e)
   if (/ECONNREFUSED|ENOTFOUND|fetch failed|network/i.test(msg)) {
-    return new Error('Tidak bisa terhubung ke Antigravity Proxy. Pastikan proxy lokal (@cortexkit/antigravity-auth atau proxy lainnya) sudah berjalan.')
+    return new Error('Tidak bisa terhubung ke Antigravity Proxy. Pastikan proxy lokal sudah berjalan, atau gunakan tombol "Masuk dengan Google (OAuth)".')
   }
   if (/401|403|unauthorized|forbidden/i.test(msg)) {
-    return new Error('Autentikasi Antigravity ditolak. Periksa kunci / token di Pengaturan.')
+    return new Error('Autentikasi Antigravity ditolak. Periksa kunci / token atau login ulang Google OAuth di Pengaturan.')
   }
   if (/429|quota|rate limit/i.test(msg)) {
     return new Error('Batas permintaan Antigravity tercapai. Coba lagi sebentar.')
@@ -35,8 +47,25 @@ function friendly(e: unknown): Error {
 }
 
 export async function testKey(key?: string, urlOverride?: string): Promise<KeyTestResult> {
+  const oauth = getOAuthStatus()
+  if (oauth.connected && !key && !urlOverride) {
+    const token = await getValidAccessToken()
+    if (token) {
+      try {
+        const testRes = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=5', {
+          headers: { Authorization: `Bearer ${token}` }
+        })
+        if (testRes.ok) {
+          return { ok: true, message: `Terhubung via Google OAuth (${oauth.email || 'Aktif'})` }
+        }
+      } catch {
+        // fallback to standard endpoint ping
+      }
+    }
+  }
+
   const base = baseUrl(urlOverride)
-  const headers = authHeaders(key)
+  const headers = await authHeaders(key)
   try {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), 6000)
@@ -108,7 +137,7 @@ export async function generateJson(
   signal?: AbortSignal
 ): Promise<unknown> {
   const base = baseUrl()
-  const headers = authHeaders()
+  const headers = await authHeaders()
   const m = model || 'gemini-2.5-flash'
 
   // Attempt 1: OpenAI chat completions (/v1/chat/completions or /chat/completions)
@@ -223,7 +252,7 @@ export async function generateImage(
   signal?: AbortSignal
 ): Promise<{ bytes: Buffer; contentType: string }> {
   const base = baseUrl()
-  const headers = authHeaders()
+  const headers = await authHeaders()
   const model = modelId || getSettings().antigravityImageModel || 'imagen-3.0-generate-002'
 
   // Map aspect ratio to dimensions if needed
@@ -300,7 +329,7 @@ export async function generateVideo(
   signal?: AbortSignal
 ): Promise<{ bytes: Buffer; contentType: string }> {
   const base = baseUrl()
-  const headers = authHeaders()
+  const headers = await authHeaders()
   const model = modelId || getSettings().antigravityVideoModel || 'veo-2.0-generate-001'
 
   const b64Image = typeof imageInput === 'string' && !imageInput.startsWith('http')
@@ -397,7 +426,7 @@ export async function speak(
   signal?: AbortSignal
 ): Promise<Buffer> {
   const base = baseUrl()
-  const headers = authHeaders()
+  const headers = await authHeaders()
   const model = getSettings().antigravityTtsModel || 'gemini-2.5-flash'
 
   try {

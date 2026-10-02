@@ -61,7 +61,10 @@ const api: StudioApi = {
     clearKey: call('settings:clearKey'),
     revealKey: call('settings:revealKey'),
     testKey: call('settings:testKey'),
-    voices: call('settings:voices')
+    voices: call('settings:voices'),
+    startGoogleOAuth: call('settings:startGoogleOAuth'),
+    googleOAuthStatus: call('settings:googleOAuthStatus'),
+    disconnectGoogleOAuth: call('settings:disconnectGoogleOAuth')
   },
   models: {
     list: call('models:list')

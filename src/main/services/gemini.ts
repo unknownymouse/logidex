@@ -5,6 +5,8 @@ import { getSecret, requireSecret } from '../secrets'
 import { getSettings, readCache, writeCache } from '../settings'
 import { isWav, pcmToWav } from './audio'
 import { extractJson } from './json'
+import { getOAuthStatus, getValidAccessToken } from './googleOAuth'
+import * as antigravity from './antigravity'
 
 function client(key?: string): GoogleGenAI {
   return new GoogleGenAI({ apiKey: key ?? requireSecret('gemini') })
@@ -13,13 +15,29 @@ function client(key?: string): GoogleGenAI {
 function friendly(e: unknown): Error {
   const msg = (e as Error)?.message ?? String(e)
   if (/API key not valid|API_KEY_INVALID|PERMISSION_DENIED|401|403/i.test(msg))
-    return new Error('Kunci Gemini ditolak. Periksa kunci di Pengaturan.')
+    return new Error('Kunci Gemini ditolak. Periksa kunci atau hubungkan kembali Google OAuth di Pengaturan.')
   if (/RESOURCE_EXHAUSTED|429/i.test(msg)) return new Error('Kuota Gemini habis atau terlalu banyak permintaan. Coba lagi sebentar.')
   if (/not found|404/i.test(msg)) return new Error(`Model Gemini tidak tersedia untuk kunci ini: ${msg}`)
   return new Error(`Gemini gagal: ${msg}`)
 }
 
 export async function testKey(key?: string): Promise<KeyTestResult> {
+  const oauth = getOAuthStatus()
+  if (oauth.connected && !key) {
+    const token = await getValidAccessToken()
+    if (token) {
+      try {
+        const testRes = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=5', {
+          headers: { Authorization: `Bearer ${token}` }
+        })
+        if (testRes.ok) {
+          return { ok: true, message: `Terhubung via Google OAuth (${oauth.email || 'Aktif'})` }
+        }
+      } catch {
+        // fallback
+      }
+    }
+  }
   const k = key ?? getSecret('gemini')
   if (!k) return { ok: false, message: 'Kunci belum diatur' }
   try {
@@ -67,6 +85,11 @@ export async function listModels(kind: 'text' | 'tts'): Promise<ModelOption[]> {
 
 /** Structured JSON output; falls back to schema-in-prompt for models without JSON mode (e.g. Gemma). */
 export async function generateJson(model: string, system: string, prompt: string, schema: object): Promise<unknown> {
+  const oauth = getOAuthStatus()
+  const apiKey = getSecret('gemini')
+  if (oauth.connected && (!apiKey || !apiKey.startsWith('AIza'))) {
+    return antigravity.generateJson(model, system, prompt, schema)
+  }
   const ai = client()
   try {
     const res = await ai.models.generateContent({
@@ -95,6 +118,11 @@ export async function generateJson(model: string, system: string, prompt: string
 
 /** Speaks one narration line. Returns a WAV file (24 kHz mono 16-bit). */
 export async function speak(text: string, voice: string, languageCode: string, signal?: AbortSignal): Promise<Buffer> {
+  const oauth = getOAuthStatus()
+  const apiKey = getSecret('gemini')
+  if (oauth.connected && (!apiKey || !apiKey.startsWith('AIza'))) {
+    return antigravity.speak(text, voice, languageCode, signal)
+  }
   try {
     const res = await client().models.generateContent({
       model: getSettings().geminiTtsModel,

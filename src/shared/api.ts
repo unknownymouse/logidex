@@ -86,6 +86,9 @@ export interface StudioApi {
     revealKey(provider: ApiProvider): Promise<string | null>
     testKey(provider: ApiProvider): Promise<KeyTestResult>
     voices(provider: TtsProvider): Promise<VoiceOption[]>
+    startGoogleOAuth(): Promise<{ ok: boolean; email?: string; message?: string }>
+    googleOAuthStatus(): Promise<{ connected: boolean; email?: string; name?: string }>
+    disconnectGoogleOAuth(): Promise<void>
   }
   models: {
     /** Live model list from the provider. Served from cache unless `refresh` is set or the cache is stale. */
