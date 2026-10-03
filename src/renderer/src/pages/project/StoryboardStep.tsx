@@ -21,8 +21,7 @@ import {
 import { DEFAULT_VIDEO_MODEL, effectiveResolution, fitDuration, getImageModel, getVideoModel } from '@shared/higgsfield'
 import {
   ANTIGRAVITY_VIDEO_MODELS,
-  DEFAULT_ANTIGRAVITY_VIDEO_MODEL,
-  getAntigravityVideoModel
+  DEFAULT_ANTIGRAVITY_VIDEO_MODEL
 } from '@shared/antigravity'
 import { CAMERA_PRESETS, MOTION_STRENGTHS, cameraAt, cameraCss } from '@shared/motion'
 import { needsVisual } from '@shared/script'
@@ -349,7 +348,7 @@ function ClipPanel({ clip, index, total }: { clip: Clip; index: number; total: n
                 {
                   id: 'video',
                   title: 'Video AI',
-                  sub: project.videoProvider === 'antigravity' ? 'Antigravity (Veo 2) · Bebas kredit' : 'Higgsfield · pakai kredit',
+                  sub: project.videoProvider === 'antigravity' ? 'Antigravity (Veo) · bebas kredit' : 'Higgsfield · pakai kredit',
                   icon: <Film className="size-[22px]" />,
                   subCls: project.videoProvider === 'antigravity' ? 'text-ok-ink' : 'text-ink-2'
                 }
@@ -444,7 +443,7 @@ function ClipPanel({ clip, index, total }: { clip: Clip; index: number; total: n
                         </div>
                       </div>
                       <p className="text-[11.5px] text-ok-ink">
-                        ✓ Google Veo via Antigravity OAuth · Bebas kredit Higgsfield
+                        ✓ Google Flow (Veo) lewat login Google · bebas kredit Higgsfield
                       </p>
                     </div>
                   ) : (
@@ -588,7 +587,7 @@ export function StoryboardStep() {
       title: `Jadikan ${n} klip video AI?`,
       body:
         (isAg
-          ? `Setiap gambar klip dianimasikan dengan ${getAntigravityVideoModel(project.videoModel).name} (Google Veo 2 via Antigravity OAuth), bebas kredit Higgsfield.`
+          ? 'Setiap gambar klip dianimasikan dengan Google Veo lewat login Google Flow, bebas kredit Higgsfield.'
           : `Setiap gambar klip dianimasikan dengan ${getVideoModel(project.videoModel).name}, panjangnya mengikuti suara narasi klip itu.` +
             (videoCredits != null ? ` Perkiraan biaya ${Math.round(videoCredits * 10) / 10} kredit Higgsfield.` : '')) +
         ' Klip yang sudah punya video tidak dibuat ulang.',
