@@ -13,9 +13,9 @@ import { binPath } from '../paths'
 import { getSecret } from '../secrets'
 import { getSettings } from '../settings'
 import { isWav, pcmToWav } from './audio'
-import { downloadTo } from './http'
 import { extractJson } from './json'
 import { getOAuthStatus, getValidAccessToken } from './googleOAuth'
+import * as flowService from './flow'
 
 export {
   ANTIGRAVITY_IMAGE_MODELS,
@@ -464,60 +464,56 @@ export async function generateVideo(
       'Content-Type': 'application/json',
       'x-goog-api-key': rawKey.trim()
     }
-    const res = await fetch(`${GOOGLE_API_BASE}/v1beta/models/${model}:predict`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        instances: [{ prompt, image: b64Image ? { bytesBase64Encoded: b64Image } : undefined }],
-        parameters: { durationSeconds: durationSec, aspectRatio: aspect }
-      }),
-      signal
-    })
-    if (res.ok) {
-      const data = (await res.json()) as any
-      const b64 = data?.predictions?.[0]?.bytesBase64Encoded || data?.video
-      if (b64) return { bytes: Buffer.from(b64, 'base64'), contentType: 'video/mp4' }
-    }
-  }
-
-  // Antigravity Veo predict request
-  const requestPayload = {
-    contents: [
-      {
-        role: 'user',
-        parts: [
-          { text: prompt },
-          ...(b64Image ? [{ inlineData: { mimeType: 'image/png', data: b64Image } }] : [])
-        ]
+    try {
+      const res = await fetch(`${GOOGLE_API_BASE}/v1beta/models/${model}:predict`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          instances: [{ prompt, image: b64Image ? { bytesBase64Encoded: b64Image } : undefined }],
+          parameters: { durationSeconds: durationSec, aspectRatio: aspect }
+        }),
+        signal
+      })
+      if (res.ok) {
+        const data = (await res.json()) as any
+        const b64 = data?.predictions?.[0]?.bytesBase64Encoded || data?.video
+        if (b64) return { bytes: Buffer.from(b64, 'base64'), contentType: 'video/mp4' }
+      } else {
+        const errJson = (await res.json().catch(() => null)) as any
+        const msg = errJson?.error?.message || `HTTP ${res.status}`
+        throw new Error(`Google API: ${msg}`)
       }
-    ],
-    generationConfig: {
-      durationSeconds: durationSec,
-      aspectRatio: aspect
+    } catch (e) {
+      if (signal?.aborted) throw new Error('Dibatalkan')
+      throw e
     }
   }
 
-  try {
-    const data = await callAntigravityApi('generateContent', model, requestPayload, signal)
-    const parts = data?.response?.candidates?.[0]?.content?.parts || data?.candidates?.[0]?.content?.parts || []
-    const videoPart = parts.find((p: any) => p.inlineData?.data)
-    if (videoPart?.inlineData?.data) {
-      return {
-        bytes: Buffer.from(videoPart.inlineData.data, 'base64'),
-        contentType: videoPart.inlineData.mimeType || 'video/mp4'
-      }
-    }
-    const url = data?.predictions?.[0]?.url || data?.url
-    if (url) {
-      const dl = await downloadTo(url, signal)
-      return { bytes: dl.bytes, contentType: dl.contentType || 'video/mp4' }
-    }
-  } catch (e) {
-    if (signal?.aborted) throw new Error('Dibatalkan')
-    throw friendly(e)
+  // Google OAuth login (Antigravity client id + `cloud-platform` scope) is accepted by
+  // Google Flow's own REST backend, so route the job there instead of cloudcode-pa.
+  // Contract + evidence: src/main/services/flow.ts
+  if (imageInput) {
+    // Flow's image-to-video routes take a *mediaId* produced by Flow's own upload step,
+    // not raw bytes, and that upload endpoint is not wired up yet.
+    throw new Error(
+      'Video dari gambar lewat akun Google Flow belum didukung (butuh upload media ke Flow dulu). ' +
+        'Gunakan prompt teks, atau pilih Penyedia Video "Higgsfield" untuk mode gambar-ke-video.'
+    )
   }
 
-  throw new Error('Google Veo di Antigravity saat ini belum menghasilkan video. Kamu bisa menggunakan Higgsfield untuk video.')
+  const wireModel =
+    modelId && /^(veo|omni)[a-z0-9_-]*$/i.test(modelId) ? modelId : undefined
+
+  return await flowService.generateVideo(
+    rawKey.trim(),
+    {
+      prompt,
+      modelKey: wireModel,
+      aspectRatio:
+        aspect === '9:16' ? 'VIDEO_ASPECT_RATIO_PORTRAIT' : 'VIDEO_ASPECT_RATIO_LANDSCAPE'
+    },
+    { signal }
+  )
 }
 
 function splitSentenceChunks(text: string, maxLen = 150): string[] {
