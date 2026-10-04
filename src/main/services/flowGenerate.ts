@@ -530,7 +530,10 @@ let modelKeyCache: { at: number; keys: string[] } | null = null
 
 function collectModelKeys(value: unknown, out: Set<string>): void {
   if (typeof value === 'string') {
-    if (/^veo_[a-z0-9_]+$/.test(value)) out.add(value)
+    // Accept anything short and key-like that mentions "veo", not just the documented `veo_*` shape:
+    // the naming has changed between builds, and a silent miss here falls back to a default that may
+    // be the wrong modality entirely.
+    if (value.length <= 60 && /^[A-Za-z0-9_]+$/.test(value) && /veo/i.test(value)) out.add(value)
     return
   }
   if (Array.isArray(value)) {
@@ -555,7 +558,13 @@ export async function fetchFlowModelKeys(force = false): Promise<string[]> {
         collectModelKeys(payload, keys)
         found += keys.size - before
       }
-      debug('model keys', rpcId, found ? `${found} baru` : 'kosong')
+      debug(
+        'model keys',
+        rpcId,
+        found ? `${found} baru` : 'KOSONG',
+        `status=${res.status}`,
+        found ? '' : res.raw.slice(0, 400)
+      )
       if (keys.size) break
     } catch (e) {
       debug('model keys', rpcId, 'gagal:', e instanceof Error ? e.message : String(e))
@@ -575,8 +584,8 @@ export function pickFlowModelKey(keys: string[], params: FlowBridgeGenParams): s
   if (!keys.length) return ''
   const wantsImage = !!params.firstFrameMediaId
   const rank = (key: string): [number, number] => {
-    const i2v = /(^|_)i2v(_|$)/.test(key)
-    const t2v = /(^|_)t2v(_|$)/.test(key)
+    const i2v = /i2v/i.test(key)
+    const t2v = /t2v/i.test(key)
     const fit = wantsImage ? (i2v ? 0 : t2v ? 2 : 1) : t2v ? 0 : 1
     return [fit, key.includes('fast') ? 0 : 1]
   }

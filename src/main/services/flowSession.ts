@@ -16,7 +16,7 @@
  * `WIZ_global_data.SNlM0e`) and, for generation, a reCAPTCHA Enterprise token.
  */
 import { app, BrowserWindow, session } from 'electron'
-import { appendFileSync, mkdirSync, renameSync, statSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { TimeoutError, withTimeout } from './timeout'
 
@@ -109,6 +109,26 @@ export function getBridgeLogPath(): string {
     logPath = ''
   }
   return logPath
+}
+
+/**
+ * The tail of the bridge log, folded into the thrown error.
+ *
+ * What actually reaches us from a user's machine is a *screenshot of the toast* — asking for a file
+ * path has cost three round trips already. Carrying the last lines in the message means one
+ * screenshot answers every open question at once.
+ */
+export function describeBridgeLogTail(maxLines = 18): string {
+  const path = getBridgeLogPath()
+  if (!path) return ''
+  try {
+    const text = readFileSync(path, 'utf8')
+    const lines = text.split(/\r?\n/).filter((line) => line.trim())
+    if (!lines.length) return '\n--- flow-bridge.log kosong ---'
+    return '\n--- ' + lines.slice(-maxLines).length + ' baris terakhir flow-bridge.log ---\n' + lines.slice(-maxLines).join('\n')
+  } catch (e) {
+    return '\n--- flow-bridge.log tidak bisa dibaca: ' + (e instanceof Error ? e.message : String(e)) + ' ---'
+  }
 }
 
 /**
@@ -463,22 +483,32 @@ function recaptchaScript(action: string): string {
     return null
   }
 
-  // Canonical key is WIZ_global_data.xZbWve. Fall back to any WIZ string shaped like a reCAPTCHA
-  // site key, then to the render= parameter of a script tag the app may already have injected.
+  let via = ''
+  let loadNote = ''
+
+  // Canonical key is WIZ_global_data.xZbWve. Fall back to any WIZ string shaped like a site key,
+  // then to the render= of a script tag the app already injected, then to a scan of the document.
+  // A miss here is indistinguishable from a rejected token downstream, so try hard.
   function findSiteKey() {
     const wiz = findWiz()
     if (wiz) {
-      if (typeof wiz.xZbWve === 'string' && wiz.xZbWve) return wiz.xZbWve
+      if (typeof wiz.xZbWve === 'string' && wiz.xZbWve) { via = 'WIZ_global_data.xZbWve'; return wiz.xZbWve }
       for (const k of Object.getOwnPropertyNames(wiz)) {
         try {
           const v = wiz[k]
-          if (typeof v === 'string' && /^6L[A-Za-z0-9_-]{20,}$/.test(v)) return v
+          if (typeof v === 'string' && /^6L[A-Za-z0-9_-]{20,}$/.test(v)) { via = 'WIZ key ' + k; return v }
         } catch (e) {}
       }
     }
     const tag = document.querySelector('script[src*="recaptcha/enterprise.js"]')
     const m = tag && /[?&]render=([^&]+)/.exec(tag.getAttribute('src') || '')
-    return m ? m[1] : ''
+    if (m) { via = 'script render='; return m[1] }
+    const nl = String.fromCharCode(10)
+    const hay = Array.from(document.scripts).map((el) => el.text || '').join(nl).slice(0, 400000) +
+      nl + document.head.innerHTML.slice(0, 200000)
+    const hit = /6L[A-Za-z0-9_-]{20,}/.exec(hay)
+    if (hit) { via = 'pindai dokumen'; return hit[0] }
+    return ''
   }
 
   function enterprise() {
@@ -501,9 +531,15 @@ function recaptchaScript(action: string): string {
         const existing = document.querySelector('script[src*="recaptcha/enterprise.js"]')
         const script = existing || document.createElement('script')
         if (!existing) {
-          script.src = 'https://www.google.com/recaptcha/enterprise.js?trustedtypes=true&render=' + encodeURIComponent(siteKey)
+          const url = 'https://www.google.com/recaptcha/enterprise.js?trustedtypes=true&render=' + encodeURIComponent(siteKey)
           script.async = true
           script.defer = true
+          try { script.src = url } catch (e) {
+            // Under require-trusted-types-for 'script' a bare src assignment throws. The app's own
+            // bundle writes it through a Trusted Types policy, so try the attribute form next.
+            loadNote = 'set src gagal: ' + String(e)
+            try { script.setAttribute('src', url) } catch (e2) { loadNote += ' | setAttribute gagal: ' + String(e2) }
+          }
           document.head.appendChild(script)
         }
         script.addEventListener('load', fin)
@@ -514,7 +550,7 @@ function recaptchaScript(action: string): string {
 
     const ent = enterprise()
     if (!ent) {
-      return JSON.stringify({ ok: false, token: '', error: 'grecaptcha.enterprise tetap kosong setelah enterprise.js disuntik (site key ' + siteKey.slice(0, 8) + '...)' })
+      return JSON.stringify({ ok: false, token: '', error: 'grecaptcha.enterprise kosong setelah enterprise.js disuntik; via=' + via + ' key=' + siteKey.slice(0, 10) + '... ' + loadNote })
     }
 
     // The bundle waits for ready() before executing; a token asked for too early resolves to ''.
@@ -529,7 +565,7 @@ function recaptchaScript(action: string): string {
     if (typeof token !== 'string' || !token) {
       return JSON.stringify({ ok: false, token: '', error: 'execute() kosong untuk action ' + ACTION })
     }
-    return JSON.stringify({ ok: true, token: token })
+    return JSON.stringify({ ok: true, token: token, via: via })
   } catch (e) {
     return JSON.stringify({ ok: false, token: '', error: String(e) })
   }

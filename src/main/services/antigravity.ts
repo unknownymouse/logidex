@@ -542,12 +542,21 @@ export async function generateVideo(
       { signal }
     )
 
-  /** Both transports failed: report once, with the bridge's own reason and the log to read. */
+  /** Both transports failed: report once, with the bridge's own reason and the log tail. */
   const exhausted = (e: unknown): Error => {
     const detail = e instanceof Error ? e.message : String(e)
     if (!bridgeError) return e instanceof Error ? e : new Error(detail)
     const log = flowSession.getBridgeLogPath()
-    return new Error(`${detail} (jalur bridge juga gagal: ${bridgeError})${log ? ` [log: ${log}]` : ''}`)
+    // Cap the two long envelopes so the toast stays readable; the log has them in full. The tail
+    // goes last on purpose: a screenshot of the toast is how this reaches a developer, so the
+    // newest evidence must be inside the visible part.
+    const short = (text: string, max: number): string =>
+      text.length > max ? `${text.slice(0, max)}...` : text
+    return new Error(
+      `${short(detail, 700)} (jalur bridge juga gagal: ${short(bridgeError, 500)})` +
+        (log ? ` [log: ${log}]` : '') +
+        flowSession.describeBridgeLogTail(18)
+    )
   }
 
   /** Nothing left to try: say what would fix it, instead of a generic failure. */
