@@ -606,7 +606,10 @@ export async function submitBridgeGeneration(
     opts.projectId !== undefined ? opts.projectId : (params.projectId ?? (await ensureFlowProject()))
 
   // Generation is reCAPTCHA-gated. The token carries the action, so it has to be minted per RPC.
-  const recaptchaToken = await getFlowRecaptchaToken('VIDEO_GENERATION')
+  // Keep the note too: the reason a token is missing has to travel with the error, because the log
+  // file is what never makes it back from the machine that failed.
+  const recaptcha = await getFlowRecaptchaToken('VIDEO_GENERATION')
+  const recaptchaToken = recaptcha.token
 
   // An explicit key still wins; otherwise ask Flow which models this account has and match the
   // key to the mode. A t2v key on an image-to-video request is an argument error, not a fallback.
@@ -615,7 +618,7 @@ export async function submitBridgeGeneration(
   debug('generate', mode, rpcId, 'modelKey=', resolvedKey || DEFAULT_FLOW_MODEL_KEY)
 
   const request = buildGenerateRequest(mode, effectiveParams, projectId ?? null, opts.count ?? 1, recaptchaToken)
-  debug('submit', rpcId, mode, recaptchaToken ? 'recaptcha=ok' : 'recaptcha=MISSING', JSON.stringify(request))
+  debug('submit', rpcId, mode, 'reCAPTCHA: ' + recaptcha.note, JSON.stringify(request))
 
   const res = await callFlowRpcAuto(rpcId, request, FLOW_ROUTE)
   debug('submit reply', rpcId, res.status, res.stage ?? '', res.raw.slice(0, 800))
@@ -627,7 +630,7 @@ export async function submitBridgeGeneration(
   if (!ids.length) {
     throw new Error(
       'Flow membalas tanpa id media/operasi, jadi status tidak bisa dilacak. ' +
-        `reCAPTCHA: ${recaptchaToken ? 'terkirim' : 'KOSONG (site key/grecaptcha tidak siap di halaman)'}. ` +
+        `reCAPTCHA: ${recaptcha.note}. ` +
         `Payload mentah: ${res.raw.slice(0, 600)}. ` +
         `Envelope terkirim: ${describeRequest(request)}`
     )

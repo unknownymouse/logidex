@@ -123,9 +123,14 @@ export function describeBridgeLogTail(maxLines = 18): string {
   if (!path) return ''
   try {
     const text = readFileSync(path, 'utf8')
-    const lines = text.split(/\r?\n/).filter((line) => line.trim())
+    // The bridge logs one line per RPC, and the repeats drown the tail: a page-reuse note and a
+    // "no payload, retrying" note per call would fill the whole window and hide the recaptcha and
+    // model-key lines that are the actual diagnosis.
+    const noise = /memakai halaman yang sudah termuat|object form returned no payload/
+    const lines = text.split(/\r?\n/).filter((line) => line.trim() && !noise.test(line))
     if (!lines.length) return '\n--- flow-bridge.log kosong ---'
-    return '\n--- ' + lines.slice(-maxLines).length + ' baris terakhir flow-bridge.log ---\n' + lines.slice(-maxLines).join('\n')
+    const tail = lines.slice(-maxLines)
+    return '\n--- ' + tail.length + ' baris terakhir flow-bridge.log (noise dibuang) ---\n' + tail.join('\n')
   } catch (e) {
     return '\n--- flow-bridge.log tidak bisa dibaca: ' + (e instanceof Error ? e.message : String(e)) + ' ---'
   }
@@ -171,6 +176,7 @@ function debug(...args: unknown[]): void {
 }
 
 let cspStripped = false
+let cspStripLogged = 0
 
 /**
  * Drop `Content-Security-Policy` on the bridge partition, and only there.
@@ -190,8 +196,18 @@ function relaxBridgeCsp(): void {
   try {
     session.fromPartition(PARTITION).webRequest.onHeadersReceived((details, callback) => {
       const headers = details.responseHeaders ?? {}
+      let removed = 0
       for (const key of Object.keys(headers)) {
-        if (key.toLowerCase().startsWith('content-security-policy')) delete headers[key]
+        if (key.toLowerCase().startsWith('content-security-policy')) {
+          delete headers[key]
+          removed += 1
+        }
+      }
+      // Proves the strip is live: without this line a silent no-op looks identical to a policy
+      // that was removed, and every later "grecaptcha is empty" report is unreadable.
+      if (removed && cspStripLogged < 3) {
+        cspStripLogged += 1
+        debug('CSP dilepas (' + removed + ' header) untuk', details.url.slice(0, 100))
       }
       callback({ responseHeaders: headers })
     })
@@ -199,6 +215,8 @@ function relaxBridgeCsp(): void {
     debug('gagal melepas CSP jendela bridge:', e instanceof Error ? e.message : String(e))
   }
 }
+
+let lastLoggedPage = ''
 
 function getWindow(show: boolean): BrowserWindow {
   if (win && !win.isDestroyed()) {
@@ -216,6 +234,16 @@ function getWindow(show: boolean): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // Chromium skips CSP (and Trusted Types) enforcement when web security is off, which is the
+      // only reliable way to let the bridge load reCAPTCHA's enterprise.js: the page's policy is
+      // nonce + strict-dynamic, so a script we inject is refused, `window.grecaptcha` never
+      // appears, and generation answers exactly like a token-less request. Stripping the header in
+      // relaxBridgeCsp() is the surgical version; this is the hammer that survives a policy we
+      // cannot see (a meta tag, an injected worker, a changed header name). The bridge is a hidden
+      // automation window that only talks to Google properties and holds nothing but cookies it
+      // already had, so the loss of same-origin and CSP enforcement costs nothing here. Set
+      // FLOW_WEB_SECURITY=on to put the normal policy back while debugging.
+      webSecurity: process.env.FLOW_WEB_SECURITY !== 'on',
       // The generate path never shows this window. Without this, Chromium throttles a hidden
       // renderer's timers, which stalls the very request the bridge is waiting on.
       backgroundThrottling: false
@@ -356,7 +384,12 @@ async function ensureFlowLoaded(show: boolean): Promise<BrowserWindow> {
   // only an empty window triggers a navigation.
   const existing = await probe(target)
   if (existing && existing.nodes > 0 && existing.readyState !== 'loading') {
-    debug('memakai halaman yang sudah termuat:', existing.url, 'wiz=' + existing.hasWiz)
+    // Logged once per distinct URL: this fires on every single RPC, and the repetition is what
+    // pushed the lines that matter out of the error's log tail.
+    if (existing.url !== lastLoggedPage) {
+      lastLoggedPage = existing.url
+      debug('memakai halaman yang sudah termuat:', existing.url, 'wiz=' + existing.hasWiz)
+    }
     return target
   }
   if (!loadPromise) {
@@ -614,20 +647,29 @@ function recaptchaScript(action: string): string {
  * fatal. It is logged either way, because "generation rejected" and "we never sent a token" look
  * identical in the server's reply.
  */
-export async function getFlowRecaptchaToken(action: string): Promise<string> {
+export interface FlowRecaptchaResult {
+  token: string
+  /** Short human-readable outcome, so the reason reaches the error toast without a log file. */
+  note: string
+}
+
+export async function getFlowRecaptchaToken(action: string): Promise<FlowRecaptchaResult> {
   try {
     const target = await ensureFlowLoaded(false)
     const raw = await execInPage(target, recaptchaScript(action), PAGE_RECAPTCHA_TIMEOUT_MS, `reCAPTCHA ${action}`)
-    const parsed = JSON.parse(raw) as { ok?: boolean; token?: string; error?: string }
+    const parsed = JSON.parse(raw) as { ok?: boolean; token?: string; error?: string; via?: string }
     if (parsed.token) {
-      debug(`reCAPTCHA ${action}: token ok (${parsed.token.length} chars)`)
-      return parsed.token
+      const note = `token ok (${parsed.token.length} chars, via ${parsed.via || 'tidak diketahui'})`
+      debug(`reCAPTCHA ${action}: ${note}`)
+      return { token: parsed.token, note }
     }
-    debug(`reCAPTCHA ${action} GAGAL:`, parsed.error ?? 'token kosong')
-    return ''
+    const note = parsed.error || 'token kosong tanpa keterangan'
+    debug(`reCAPTCHA ${action} GAGAL:`, note)
+    return { token: '', note }
   } catch (e) {
-    debug(`reCAPTCHA ${action} GAGAL (exception):`, e instanceof Error ? e.message : String(e))
-    return ''
+    const note = 'exception: ' + (e instanceof Error ? e.message : String(e))
+    debug(`reCAPTCHA ${action} GAGAL`, note)
+    return { token: '', note }
   }
 }
 
