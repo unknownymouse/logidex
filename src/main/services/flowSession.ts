@@ -69,6 +69,7 @@ export interface FlowRpcResult {
   /** Set when the failure happened before the request left the page. */
   stage?: string
   error?: string
+  xsrf?: string
 }
 
 export interface FlowSessionStatus {
@@ -81,6 +82,12 @@ let loadPromise: Promise<void> | null = null
 let loginPromise: Promise<{ ok: boolean; message: string }> | null = null
 
 let logPath: string | null = null
+
+/**
+ * The most recent `xsrf` token a batchexecute response handed back. Google rotates the
+ * anti-XSRF token per response, so the freshest one wins on the next call.
+ */
+let cachedAt = ''
 
 /**
  * Always-on log file, next to the app's database.
@@ -99,6 +106,20 @@ export function getBridgeLogPath(): string {
     logPath = ''
   }
   return logPath
+}
+
+/**
+ * JSON for the log, with long strings (the base64 image body) collapsed to their length, so a
+ * diagnostic dump stays readable instead of growing the log by megabytes.
+ */
+function redactArgs(value: unknown): string {
+  try {
+    return JSON.stringify(value, (_k, v) =>
+      typeof v === 'string' && v.length > 200 ? `<${v.length} chars>` : v
+    ).slice(0, 2000)
+  } catch {
+    return '<tidak bisa diserialisasi>'
+  }
 }
 
 function safeJson(value: unknown): string {
@@ -298,7 +319,7 @@ async function ensureFlowLoaded(show: boolean): Promise<BrowserWindow> {
  * Runs inside the page. Finds `WIZ_global_data`, derives the per-session scalars, posts the
  * batchexecute request with same-origin credentials, then unpacks the anti-XSSI envelope.
  */
-function rpcScript(rpcId: string, argsJson: string, sourcePath: string): string {
+function rpcScript(rpcId: string, argsJson: string, sourcePath: string, atOverride = ''): string {
   return `(async () => {
   const RPC_ID = ${JSON.stringify(rpcId)}
   const ARGS = ${JSON.stringify(argsJson)}
@@ -324,9 +345,13 @@ function rpcScript(rpcId: string, argsJson: string, sourcePath: string): string 
   }
 
   const strs = Object.values(wiz).filter((v) => typeof v === 'string')
-  const sid = strs.find((v) => /^\\d{15,25}$/.test(v)) || ''
-  const bl = strs.find((v) => v.startsWith('boq_')) || ''
+  // Canonical WIZ_global_data keys for the boq handshake: FdrFje is f.sid, cfb2h is bl. The
+  // regex guesses below only cover a page that renamed them.
+  const at0 = typeof wiz.SNlM0e === 'string' ? wiz.SNlM0e : ''
+  const sid = (typeof wiz.FdrFje === 'string' && wiz.FdrFje) || strs.find((v) => /^\\d{15,25}$/.test(v)) || ''
+  const bl = (typeof wiz.cfb2h === 'string' && wiz.cfb2h) || strs.find((v) => v.startsWith('boq_')) || ''
   const base = typeof wiz.eptZe === 'string' ? wiz.eptZe : '/_/AiSandboxAngularFrontend/'
+  const AT_OVERRIDE = ${JSON.stringify(atOverride)}
 
   const qs = new URLSearchParams({
     rpcids: RPC_ID,
@@ -342,6 +367,13 @@ function rpcScript(rpcId: string, argsJson: string, sourcePath: string): string 
   // f.sid is per-session bookkeeping, not authentication: send it when the page exposes it,
   // but never refuse the call without it. Cookies carry the auth.
   if (sid) qs.set('f.sid', sid)
+
+  // The at param is the anti-XSRF token every POST to batchexecute needs. The Flow bundle
+  // installs it with configure(xd('SNlM0e'), xd('S06Grb')) - i.e. WIZ_global_data.SNlM0e - and
+  // omitting it is what makes mutating RPCs (uploads) answer HTTP 400 while reads look fine.
+  // A token the server handed back in an earlier response (xsrf) is the fallback.
+  const at = AT_OVERRIDE || at0
+  if (at) qs.set('at', at)
 
   const body = 'f.req=' + encodeURIComponent(JSON.stringify([[[RPC_ID, ARGS, null, 'generic']]]))
 
@@ -387,7 +419,8 @@ function rpcScript(rpcId: string, argsJson: string, sourcePath: string): string 
     }
   }
 
-  return JSON.stringify({ ok: res.ok, status: res.status, payloads: payloads, raw: text.slice(0, 4000) })
+  const xsrf = (/"xsrf"\\s*:\\s*"([^"]+)"/.exec(text) || [])[1] || ''
+  return JSON.stringify({ ok: res.ok, status: res.status, payloads: payloads, raw: text.slice(0, 4000), xsrf: xsrf })
 })()`
 }
 
@@ -428,7 +461,7 @@ export async function callFlowRpc(
   opts: { argStyle?: FlowArgStyle } = {}
 ): Promise<FlowRpcResult> {
   const payload = opts.argStyle === 'array' ? toPositionalArgs(args) : args
-  const script = rpcScript(rpcId, JSON.stringify(payload ?? []), sourcePath)
+  const script = rpcScript(rpcId, JSON.stringify(payload ?? []), sourcePath, cachedAt)
 
   const attempt = async (): Promise<string> => {
     const target = await ensureFlowLoaded(false)
@@ -464,7 +497,14 @@ export async function callFlowRpc(
   } catch {
     return { ok: false, status: 0, payloads: [], raw: String(raw).slice(0, 4000), stage: 'parse', error: 'Respons bukan JSON' }
   }
+  if (parsed.xsrf) cachedAt = parsed.xsrf
   debug(rpcId, '->', parsed.status, parsed.stage ?? '', parsed.error ?? '')
+  if (!parsed.ok) {
+    // The reason this log exists: a rejected RPC must say what it sent and what came back, in
+    // one file, with no debug flag set on the user's machine.
+    debug(rpcId, 'GAGAL request:', redactArgs(payload))
+    debug(rpcId, 'GAGAL respons:', String(parsed.raw ?? '').slice(0, 2500))
+  }
   if (process.env.FLOW_DEBUG) console.log('[flow-bridge] raw:', parsed.raw)
   return parsed
 }

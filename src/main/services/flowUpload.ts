@@ -112,7 +112,9 @@ export async function uploadImageToFlow(input: FlowUploadInput): Promise<FlowUpl
     8: false, // isHidden
     9: fileName // fileName
   }
-  if (input.width && input.height) args[10] = { 1: input.width, 2: input.height }
+  // Field 10 was a *guess* and is deliberately not sent: the bundle writes an optional
+  // context-ish message there, and a wrong-typed value at a known field number is exactly the
+  // kind of thing that turns into HTTP 400 INVALID_ARGUMENT. Width/height stay local.
 
   const res = await callFlowRpcAuto(FLOW_RPC.uploadImage, args)
 
