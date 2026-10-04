@@ -14,7 +14,7 @@
  * framework XSRF token all behave exactly as they do for the real web client. We never
  * hand-roll SAPISIDHASH, and we never need the `at` token (this build does not use one).
  */
-import { BrowserWindow } from 'electron'
+import { BrowserWindow, session } from 'electron'
 
 export const FLOW_ORIGIN = 'https://labs.google'
 export const FLOW_ROUTE = '/fx/tools/flow'
@@ -22,6 +22,23 @@ const FLOW_URL = `${FLOW_ORIGIN}${FLOW_ROUTE}`
 const PARTITION = 'persist:flow-bridge'
 const LOGIN_TIMEOUT_MS = 5 * 60 * 1000
 const HARVEST_POLL_MS = 1500
+/** How long to wait for *a document*, not for the network to go quiet — see waitForDocument. */
+const FLOW_READY_TIMEOUT_MS = 60000
+const READY_POLL_MS = 500
+/**
+ * Google walls its sign-in off inside clients it recognises as embedded ("this browser or app may
+ * not be secure"). The bridge really is Chromium, so present it as one; `FLOW_UA=default` restores
+ * Electron's own user agent for debugging.
+ */
+const FLOW_UA =
+  process.env.FLOW_UA === 'default'
+    ? ''
+    : process.env.FLOW_UA ||
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 export interface FlowRpcResult {
   ok: boolean
@@ -53,7 +70,7 @@ function getWindow(show: boolean): BrowserWindow {
     if (show && !win.isVisible()) win.show()
     return win
   }
-  win = new BrowserWindow({
+  const created = new BrowserWindow({
     width: 1120,
     height: 820,
     show,
@@ -63,60 +80,139 @@ function getWindow(show: boolean): BrowserWindow {
       partition: PARTITION,
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true
+      sandbox: true,
+      // The generate path never shows this window. Without this, Chromium throttles a hidden
+      // renderer's timers, which stalls the very request the bridge is waiting on.
+      backgroundThrottling: false
     }
   })
-  win.on('closed', () => {
+  win = created
+  if (FLOW_UA) session.fromPartition(PARTITION).setUserAgent(FLOW_UA)
+  // Google sometimes opens its account chooser in a popup; keep the whole sign-in inside the one
+  // window whose partition holds the session.
+  created.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https:\/\/(accounts\.google\.com|labs\.google)/.test(url)) void created.loadURL(url)
+    return { action: 'deny' }
+  })
+  created.on('closed', () => {
     win = null
     loadPromise = null
   })
-  return win
+  return created
 }
 
-function waitForLoad(target: BrowserWindow, timeoutMs = 45000): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (!target.webContents.isLoading()) {
-      resolve()
+/** Runs inside the page: enough state to tell whether a usable document exists. */
+function probeScript(): string {
+  return `(() => {
+  function findWiz() {
+    const direct = window.WIZ_global_data
+    if (direct && typeof direct.eptZe === 'string') return direct
+    for (const k of Object.getOwnPropertyNames(window)) {
+      try {
+        const v = window[k]
+        if (v && typeof v === 'object' && typeof v.eptZe === 'string') return v
+      } catch (e) {}
+    }
+    return null
+  }
+  const body = document.body
+  return JSON.stringify({
+    url: location.href,
+    title: document.title || '',
+    readyState: document.readyState,
+    hasWiz: !!findWiz(),
+    nodes: body ? body.childElementCount : 0,
+    text: body && body.innerText ? body.innerText.slice(0, 200) : ''
+  })
+})()`
+}
+
+interface FlowPageProbe {
+  url: string
+  title: string
+  readyState: string
+  hasWiz: boolean
+  nodes: number
+  text: string
+}
+
+async function probe(target: BrowserWindow): Promise<FlowPageProbe | null> {
+  if (target.isDestroyed()) return null
+  try {
+    const raw = (await target.webContents.executeJavaScript(probeScript(), true)) as string
+    return JSON.parse(raw) as FlowPageProbe
+  } catch {
+    return null
+  }
+}
+
+function describeProbe(p: FlowPageProbe | null): string {
+  if (!p) return 'dokumen tidak terbaca'
+  const text = p.text.replace(/\s+/g, ' ').trim().slice(0, 80)
+  return `url=${p.url} title="${p.title}" ready=${p.readyState} nodes=${p.nodes} wiz=${p.hasWiz} teks="${text}"`
+}
+
+/**
+ * Wait until the window holds a *rendered document*, not until the network goes quiet.
+ *
+ * The old `did-finish-load` + `isLoading()` pair was wrong for this site: labs.google hands off to
+ * Google's sign-in with a client-side redirect, after which the page sits with `isLoading() ===
+ * true` while a subresource hangs — so the wait burned its whole timeout on a page that was
+ * already usable. Any document counts as ready, including a sign-in page: the *caller* decides
+ * whether the session behind it is usable, not this function.
+ */
+async function waitForDocument(target: BrowserWindow, timeoutMs = FLOW_READY_TIMEOUT_MS): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  let last: FlowPageProbe | null = null
+  while (Date.now() < deadline) {
+    if (target.isDestroyed()) throw new Error('Jendela Flow ditutup sebelum halaman siap')
+    last = await probe(target)
+    // `loading` = the document is still being parsed; `interactive`/`complete` means the DOM is
+    // there and scriptable even when a subresource is still pending.
+    if (last && last.nodes > 0 && last.readyState !== 'loading' && last.url !== 'about:blank') {
+      debug('dokumen siap:', describeProbe(last))
       return
     }
-    const timer = setTimeout(() => {
-      cleanup()
-      reject(new Error('Halaman Flow tidak selesai dimuat'))
-    }, timeoutMs)
-    const done = (): void => {
-      cleanup()
-      resolve()
-    }
-    const fail = (_e: unknown, code: number, desc: string): void => {
-      cleanup()
-      reject(new Error(`Gagal memuat Flow (${code} ${desc})`))
-    }
-    function cleanup(): void {
-      clearTimeout(timer)
-      target.webContents.off('did-finish-load', done)
-      target.webContents.off('did-fail-load', fail)
-    }
-    target.webContents.once('did-finish-load', done)
-    target.webContents.once('did-fail-load', fail)
-  })
+    await delay(READY_POLL_MS)
+  }
+  throw new Error(`Halaman Flow tidak selesai dimuat (${describeProbe(last)})`)
 }
 
-/** Navigate the hidden window to Flow and wait for the document to settle. */
+/** Navigate the bridge window to Flow once, tolerating the redirect chain Google throws at it. */
+function loadFlow(target: BrowserWindow): Promise<void> {
+  // Sign-in bounces through several URLs and Electron surfaces an intermediate abort as a
+  // rejection even though the final page arrives. Readiness is decided by waitForDocument, so a
+  // rejected navigation must not abort the attempt.
+  return target
+    .loadURL(FLOW_URL)
+    .then(() => undefined)
+    .catch((e: unknown) => {
+      debug('loadURL ditolak, lanjut menunggu dokumen:', String(e))
+    })
+}
+
+/** Make sure the bridge window holds a usable document, navigating only when it has none. */
 async function ensureFlowLoaded(show: boolean): Promise<BrowserWindow> {
   const target = getWindow(show)
-  const current = target.webContents.getURL()
-  if (current.startsWith(FLOW_ORIGIN)) {
-    if (show && !target.isVisible()) target.show()
+  if (show && !target.isVisible()) {
+    target.show()
+    target.focus()
+  }
+  // Re-navigating whenever the URL was not on labs.google used to fight the SPA's own redirect
+  // into Google sign-in and reload the page under the user's feet. Any document is scriptable, so
+  // only an empty window triggers a navigation.
+  const existing = await probe(target)
+  if (existing && existing.nodes > 0 && existing.readyState !== 'loading') {
+    debug('memakai halaman yang sudah termuat:', existing.url, 'wiz=' + existing.hasWiz)
     return target
   }
   if (!loadPromise) {
-    loadPromise = target.loadURL(FLOW_URL).catch((e: unknown) => {
+    loadPromise = loadFlow(target).finally(() => {
       loadPromise = null
-      throw e
     })
   }
   await loadPromise
-  await waitForLoad(target)
+  await waitForDocument(target)
   return target
 }
 
@@ -144,8 +240,9 @@ function rpcScript(rpcId: string, argsJson: string, sourcePath: string): string 
 
   const wiz = findWiz()
   if (!wiz) {
+    const where = location.href + ' (ready=' + document.readyState + ') "' + (document.title || '') + '"'
     return JSON.stringify({ ok: false, status: 0, payloads: [], raw: '',
-      stage: 'wiz', error: 'WIZ_global_data tidak ketemu - halaman Flow belum termuat atau belum login' })
+      stage: 'wiz', error: 'WIZ_global_data tidak ketemu di ' + where })
   }
 
   const strs = Object.values(wiz).filter((v) => typeof v === 'string')
@@ -350,7 +447,6 @@ export async function openFlowLogin(): Promise<{ ok: boolean; message: string }>
     const target = getWindow(true)
     target.show()
     target.focus()
-    loadPromise = null
     await ensureFlowLoaded(true)
 
     const deadline = Date.now() + LOGIN_TIMEOUT_MS
