@@ -493,11 +493,15 @@ export async function generateVideo(
   // Google Flow's own REST backend, so route the job there instead of cloudcode-pa.
   // Contract + evidence: src/main/services/flow.ts
   if (imageInput) {
-    // Flow's image-to-video routes take a *mediaId* produced by Flow's own upload step,
-    // not raw bytes, and that upload endpoint is not wired up yet.
+    // Flow's image-to-video routes take a *mediaId* from Flow's own upload step, not raw
+    // bytes — and that upload RPC is cookie-authenticated (the web client calls it with
+    // `withCredentials` + X-Framework-Xsrf-Token), which an OAuth token cannot do. See
+    // docs/flow-api-re.md §6.3. Text-to-video is unaffected and still routed below.
     throw new Error(
-      'Video dari gambar lewat akun Google Flow belum didukung (butuh upload media ke Flow dulu). ' +
-        'Gunakan prompt teks, atau pilih Penyedia Video "Higgsfield" untuk mode gambar-ke-video.'
+      'Video dari gambar lewat akun Google Flow belum bisa: Flow cuma nerima gambar yang ' +
+        'sudah di-upload ke project-nya (mediaId), dan endpoint upload itu butuh cookie ' +
+        'sesi browser, bukan token login. Untuk mode gambar-ke-video pakai Penyedia Video ' +
+        '"Higgsfield"; akun Google Flow tetap bisa dipakai untuk teks-ke-video.'
     )
   }
 

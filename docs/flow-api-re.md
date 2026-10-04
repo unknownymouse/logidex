@@ -147,3 +147,102 @@ access token from the app's existing login is a first-class credential for Flow.
 4. **Scope.** `cloud-platform` is the broadest GCP scope and is expected to be accepted;
    if the probe returns 403 rather than 401, add the Flow-specific scope to `SCOPES` in
    `googleOAuth.ts` and reconnect.
+
+## 6. RPC surface, recovered from the app bundle
+
+The web client does not call the `/v1/` REST routes at all — every RPC goes through
+`batchexecute` at `${WIZ.eptZe}data/batchexecute` via the RPC's short id. Full map recovered
+from `new _.Gx("<shortId>", …, ["/<Service>.<Method>"])`:
+
+| short id | method |
+| --- | --- |
+| `YhhmEf` | `/VideoFxService.BatchAsyncGenerateVideoText` |
+| `eb1hJf` | `/VideoFxService.BatchAsyncGenerateVideoStartImage` |
+| `nprQif` | `/VideoFxService.BatchAsyncGenerateVideoStartAndEndImage` |
+| `MZZa6b` | `/VideoFxService.BatchAsyncGenerateVideoReferenceImages` |
+| `fZytfe` | `/VideoFxService.BatchAsyncGenerateVideoExtendVideo` |
+| `jIps6` | `/VideoFxService.BatchAsyncGenerateVideoEditVideo` |
+| `p0UkFb` | `/VideoFxService.BatchAsyncGenerateVideoUpsampleVideo` |
+| `nzlxg` | `/VideoFxService.GetCredits` |
+| `Yw72Rc` | `/VideoFxService.CreatePreamble` |
+| `SPrCad` | `/FlowService.UpsampleImage` |
+| **`maseQ`** | **`/FlowService.UploadImage`** |
+| `as29s` | `/FlowService.GetMedia` |
+| `Zzl0ze` | `/FlowService.GetProjectContents` |
+| `jHPbke` | `/AiSandbox.CreateProject` |
+| `ngNC2` | `/AiSandbox.GetProject` |
+
+(69 pairs total; the rest are `InternalPeopleService` / `FlowCreationAgentService` and are
+irrelevant here.)
+
+### 6.1 Image-to-video payload
+
+`BatchAsyncGenerateVideoStartAndEndImage` ships a plain JSON blob as the RPC argument
+(the client logs it verbatim as `MEDIA_GENERATION_SETTINGS`), so the shape is exact:
+
+```json
+{
+  "videoModelKey": "<wire key>",
+  "aspectRatio": "<VIDEO_ASPECT_RATIO_LANDSCAPE|PORTRAIT>",
+  "count": 1,
+  "structuredPrompt": { "parts": [{ "text": "<prompt>" }] },
+  "inputFrames": {
+    "firstFrame": { "mediaId": "<id>", "cropCoordinates": { "top": 0, "left": 0, "bottom": 0, "right": 0 } },
+    "lastFrame": null
+  },
+  "firstFrame": { "mediaId": "<id>", "cropCoordinates": { … } },
+  "lastFrame": null,
+  "referenceImages": [{ "mediaId": "<id>", "cropCoordinates": { … } }],
+  "baseVideoId": "<id>"
+}
+```
+
+Frame mode selects which keys are populated:
+
+| mode | populated |
+| --- | --- |
+| `START_FRAME` | `firstFrame` |
+| `START_END_FRAMES` | `firstFrame` + `lastFrame` |
+| `REFERENCES` / `EXTEND_VIDEO` / `EDIT_VIDEO` | `referenceImages[]` |
+| `TEXT` / `UPSAMPLE_VIDEO` | none |
+
+**Frames are always references (`mediaId`), never raw image bytes.** That single fact is why
+image-to-video cannot work from the app's OAuth token today.
+
+### 6.2 Image upload (`/FlowService.UploadImage`, short id `maseQ`)
+
+Request proto field numbers:
+
+| field | meaning |
+| --- | --- |
+| 1 | context: project / collection / workflow |
+| 2 | image bytes (base64) |
+| 3 | mimeType |
+| 4 | crop flag (default `true`) |
+| 7 | crop coordinates |
+| 8 | `isHidden` (default `false`) |
+| 9 | fileName |
+| 10 | dimensions `{ width, height }` |
+| 11, 12, 14 | optional, unused by the UI |
+
+Response field 1 is the created `Media` object — its id is the `mediaId` the generation call
+needs.
+
+### 6.3 Why an OAuth-only client cannot do image-to-video
+
+* Every plausible REST upload path on `aisandbox-pa.googleapis.com` returns **404**
+  (`/v1/media:upload`, `/v1/media:batchUpload`, `/v1/files:upload`,
+  `/v1/flow/upload/image/*`, `/v1/upload:image`), while the known-good generation route
+  returns **401**. The REST surface can *consume* a `mediaId` but has no way to *mint* one.
+* The only upload path is the `batchexecute` RPC above, which the web client calls with
+  **cookie auth** (`withCredentials` + `X-Framework-Xsrf-Token`) — a credential this desktop
+  app does not hold.
+* Video file upload is separate again: resumable Google upload at
+  `/upload/v1/flow/upload/video/<projectId>`, also cookie-authenticated.
+
+**Conclusion:** with an OAuth 2 Bearer token, Flow is **text-to-video only**. Full
+image-to-video needs a logged-in Flow browser session. The app could obtain one by opening
+its own `BrowserWindow` on `labs.google/fx/tools/flow` and reading the session cookies
+(`SAPISIDHASH`) — that is a design decision, not a code detail, and is deliberately not
+implemented.
+

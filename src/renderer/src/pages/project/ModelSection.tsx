@@ -238,11 +238,12 @@ export function ModelSection({
               />
               <p className="flex items-center gap-1.5 text-[12.5px] leading-snug text-ok-ink">
                 <Sparkles className="size-3.5 text-accent" />
-                <span>Google Flow (Veo) lewat login Google · bebas kredit Higgsfield</span>
+                <span>Google Flow (Veo) lewat login Google · teks-ke-video · bebas kredit Higgsfield</span>
               </p>
               <p className="flex items-start gap-1.5 text-[12.5px] leading-snug text-muted">
                 <Move className="mt-px size-3.5 shrink-0" />
-                Hanya untuk klip yang kamu jadikan Video AI. Gerak kamera tetap gratis.
+                Hanya untuk klip yang kamu jadikan Video AI. Klip yang dianimasikan dari gambar
+                tetap harus pakai Higgsfield. Gerak kamera bebas kredit.
               </p>
             </>
           ) : (
