@@ -236,9 +236,9 @@ export function ModelSection({
                 menuClassName="w-[430px]"
                 onChange={(id) => onChange({ videoModel: id })}
               />
-              <p className="flex items-center gap-1.5 text-[12.5px] leading-snug text-ink-2">
+              <p className="flex items-center gap-1.5 text-[12.5px] leading-snug text-ok-ink">
                 <Sparkles className="size-3.5 text-accent" />
-                <span>Veo 2 (Image-to-Video) melalui Antigravity OAuth · Bebas kredit Higgsfield</span>
+                <span>Google Flow (Veo) lewat login Google · bebas kredit Higgsfield</span>
               </p>
               <p className="flex items-start gap-1.5 text-[12.5px] leading-snug text-muted">
                 <Move className="mt-px size-3.5 shrink-0" />
