@@ -170,6 +170,36 @@ function debug(...args: unknown[]): void {
   }
 }
 
+let cspStripped = false
+
+/**
+ * Drop `Content-Security-Policy` on the bridge partition, and only there.
+ *
+ * Flow answers with a policy carrying a per-response nonce (the page's own inline scripts use
+ * `<script nonce="...">`). A script we inject ourselves — reCAPTCHA's `enterprise.js`, which the
+ * page only loads when a human submits something — has no nonce, so `strict-dynamic` refuses it,
+ * `window.grecaptcha` never appears, and every generation token comes back empty. The same policy
+ * is what can enforce Trusted Types, which makes a bare `script.src = ...` throw instead of
+ * loading. This window is ours, hidden, and does nothing but hold cookies and post batchexecute
+ * requests; removing a restriction cannot break the app, and the bridge needs that script to load.
+ * The visible Flow window the user signs in through keeps its own session and its own policy.
+ */
+function relaxBridgeCsp(): void {
+  if (cspStripped) return
+  cspStripped = true
+  try {
+    session.fromPartition(PARTITION).webRequest.onHeadersReceived((details, callback) => {
+      const headers = details.responseHeaders ?? {}
+      for (const key of Object.keys(headers)) {
+        if (key.toLowerCase().startsWith('content-security-policy')) delete headers[key]
+      }
+      callback({ responseHeaders: headers })
+    })
+  } catch (e) {
+    debug('gagal melepas CSP jendela bridge:', e instanceof Error ? e.message : String(e))
+  }
+}
+
 function getWindow(show: boolean): BrowserWindow {
   if (win && !win.isDestroyed()) {
     if (show && !win.isVisible()) win.show()
@@ -193,6 +223,7 @@ function getWindow(show: boolean): BrowserWindow {
   })
   win = created
   if (FLOW_UA) session.fromPartition(PARTITION).setUserAgent(FLOW_UA)
+  relaxBridgeCsp()
   // Google sometimes opens its account chooser in a popup; keep the whole sign-in inside the one
   // window whose partition holds the session.
   created.webContents.setWindowOpenHandler(({ url }) => {
@@ -534,6 +565,10 @@ function recaptchaScript(action: string): string {
           const url = 'https://www.google.com/recaptcha/enterprise.js?trustedtypes=true&render=' + encodeURIComponent(siteKey)
           script.async = true
           script.defer = true
+          // Belt and braces in case the policy could not be stripped: reuse the page's own nonce.
+          const ref = document.querySelector('script[nonce]')
+          const nonce = ref ? (ref.getAttribute('nonce') || ref.nonce || '') : ''
+          if (nonce) { try { script.setAttribute('nonce', nonce) } catch (e) {} }
           try { script.src = url } catch (e) {
             // Under require-trusted-types-for 'script' a bare src assignment throws. The app's own
             // bundle writes it through a Trusted Types policy, so try the attribute form next.
