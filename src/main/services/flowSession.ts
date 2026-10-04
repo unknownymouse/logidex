@@ -65,6 +65,12 @@ function delay(ms: number): Promise<void> {
 export interface FlowRpcResult {
   ok: boolean
   status: number
+  /** Status codes the framework attaches to a rejected RPC (null payload) — one per `wrb.fr`. */
+  errCodes?: number[]
+  /** Top-level `["e",...]` entries, verbatim and short. */
+  topErrors?: string[]
+  /** Which anti-XSRF token the call used: the page's own (`halaman`) or the rotating one. */
+  atSource?: string
   /** Parsed `wrb.fr` payloads for the requested rpc id. */
   payloads: unknown[]
   /** First 4 kB of the raw response — the honest error surface. */
@@ -493,21 +499,35 @@ function rpcScript(rpcId: string, argsJson: string, sourcePath: string, atOverri
   }
 
   const payloads = []
-  for (const line of text.split('\\n')) {
+  const errCodes = []
+  const topErrors = []
+  for (const line of text.split(String.fromCharCode(10))) {
     const t = line.trim()
     if (!t || t.startsWith(')]}') || /^\\d+$/.test(t)) continue
     let chunk
     try { chunk = JSON.parse(t) } catch (e) { continue }
     if (!Array.isArray(chunk)) continue
     for (const item of chunk) {
-      if (Array.isArray(item) && item[0] === 'wrb.fr' && item[1] === RPC_ID && item[2] != null) {
-        try { payloads.push(JSON.parse(item[2])) } catch (e) { payloads.push(item[2]) }
+      if (!Array.isArray(item)) continue
+      if (item[0] === 'wrb.fr' && item[1] === RPC_ID) {
+        if (item[2] != null) {
+          try { payloads.push(JSON.parse(item[2])) } catch (e) { payloads.push(item[2]) }
+        } else {
+          // A null payload is a rejection, not an empty result. Field 5 holds a message whose
+          // field 1 is the status code (_.Br / _.Ts in the bundle), so surfacing it is what
+          // separates "wrong argument" from "nothing to return".
+          const err = item[5]
+          errCodes.push(Array.isArray(err) && err.length ? err[0] : -1)
+        }
+      } else if (item[0] === 'e') {
+        topErrors.push(item.slice(0, 5).map((v) => String(v)).join(':'))
       }
     }
   }
 
   const xsrf = (/"xsrf"\\s*:\\s*"([^"]+)"/.exec(text) || [])[1] || ''
-  return JSON.stringify({ ok: res.ok, status: res.status, payloads: payloads, raw: text.slice(0, 4000), xsrf: xsrf })
+  return JSON.stringify({ ok: res.ok, status: res.status, payloads: payloads, raw: text.slice(0, 4000), xsrf: xsrf,
+    errCodes: errCodes, topErrors: topErrors, atSource: at ? (AT_OVERRIDE ? 'rotasi' : 'halaman') : 'kosong' })
 })()`
 }
 
@@ -736,10 +756,10 @@ export async function callFlowRpc(
   rpcId: string,
   args: unknown,
   sourcePath = FLOW_ROUTE,
-  opts: { argStyle?: FlowArgStyle } = {}
+  opts: { argStyle?: FlowArgStyle; atOverride?: string } = {}
 ): Promise<FlowRpcResult> {
   const payload = opts.argStyle === 'array' ? toPositionalArgs(args) : args
-  const script = rpcScript(rpcId, JSON.stringify(payload ?? []), sourcePath, cachedAt)
+  const script = rpcScript(rpcId, JSON.stringify(payload ?? []), sourcePath, opts.atOverride ?? cachedAt)
 
   const attempt = async (): Promise<string> => {
     const target = await ensureFlowLoaded(false)
@@ -776,7 +796,20 @@ export async function callFlowRpc(
     return { ok: false, status: 0, payloads: [], raw: String(raw).slice(0, 4000), stage: 'parse', error: 'Respons bukan JSON' }
   }
   if (parsed.xsrf) cachedAt = parsed.xsrf
-  debug(rpcId, '->', parsed.status, parsed.stage ?? '', parsed.error ?? '')
+  // One line per call, and it has to be readable in a screenshot: payload count, the framework's
+  // rejection code, its own error entries, and which anti-XSRF token was used.
+  debug(
+    rpcId, '->', parsed.status,
+    'p=' + parsed.payloads.length,
+    parsed.errCodes?.length ? 'err=' + parsed.errCodes.join(',') : '',
+    parsed.topErrors?.length ? 'e=' + parsed.topErrors.join('|') : '',
+    'at=' + (parsed.atSource ?? '?'),
+    parsed.stage ?? '',
+    parsed.error ?? ''
+  )
+  if (!parsed.payloads.length && parsed.raw) {
+    debug(rpcId, 'raw:', parsed.raw.replace(/\s+/g, ' ').slice(0, 320))
+  }
   if (!parsed.ok) {
     // The reason this log exists: a rejected RPC must say what it sent and what came back, in
     // one file, with no debug flag set on the user's machine.
@@ -797,11 +830,36 @@ export async function callFlowRpcAuto(
   args: unknown,
   sourcePath = FLOW_ROUTE
 ): Promise<FlowRpcResult> {
-  const objectForm = await callFlowRpc(rpcId, args, sourcePath, { argStyle: 'object' })
-  if (objectForm.stage || !objectForm.ok || objectForm.payloads.length > 0) return objectForm
-  debug(rpcId, 'object form returned no payload; retrying positional array form')
-  const arrayForm = await callFlowRpc(rpcId, args, sourcePath, { argStyle: 'array' })
-  return arrayForm.payloads.length > 0 ? arrayForm : objectForm
+  // The combinations that could be the difference between a payload and a bare rejection: the
+  // page's own anti-XSRF token or the one the last response handed back, crossed with the object
+  // arg shape the bundle produces and the positional shape older builds accept. A rejected RPC
+  // answers with a null payload, so whichever variant returns one is the variant the server wants
+  // — and the successful label is logged, turning a guess into a measurement.
+  const attempts: { argStyle: FlowArgStyle; atOverride: string; label: string }[] = [
+    { argStyle: 'object', atOverride: '', label: 'object+tokenHalaman' },
+    { argStyle: 'array', atOverride: '', label: 'array+tokenHalaman' }
+  ]
+  if (cachedAt) {
+    attempts.push({ argStyle: 'object', atOverride: cachedAt, label: 'object+tokenRotasi' })
+    attempts.push({ argStyle: 'array', atOverride: cachedAt, label: 'array+tokenRotasi' })
+  }
+
+  let first: FlowRpcResult | null = null
+  for (const attempt of attempts) {
+    const res = await callFlowRpc(rpcId, args, sourcePath, {
+      argStyle: attempt.argStyle,
+      atOverride: attempt.atOverride
+    })
+    if (!first) first = res
+    if (res.stage || !res.ok) continue
+    if (res.payloads.length > 0) {
+      if (attempt.label !== attempts[0].label) debug(rpcId, 'hanya berhasil lewat', attempt.label)
+      return res
+    }
+  }
+  return (
+    first ?? { ok: false, status: 0, payloads: [], raw: '', stage: 'none', error: 'tidak ada upaya' }
+  )
 }
 
 /** Runs inside the page: fetch a Fife/media URL with the session cookies and hand back base64. */
