@@ -189,8 +189,11 @@ function promptField(prompt: string): Record<string, unknown> {
 
 /** `_.cu(bQ(cQ(new dQ, mediaId), crop))` — frame reference at item field 5 / 6. */
 function frameField(mediaId: string, crop?: FlowBridgeFrameCrop): Record<string, unknown> {
+  // The bundle writes both fields unconditionally — `bQ(cQ(new dQ, mediaId), NN(crop))` — and
+  // `NN(undefined)` yields an empty message, so a frame with only field 2 is a shape the web client
+  // never produces.
   const frame: Record<string, unknown> = { 2: { 1: mediaId } }
-  if (crop) frame[6] = { 1: crop.top, 2: crop.left, 3: crop.bottom, 4: crop.right }
+  frame[6] = crop ? { 1: crop.top, 2: crop.left, 3: crop.bottom, 4: crop.right } : {}
   return frame
 }
 
@@ -217,9 +220,24 @@ function traceField(traceId: string, audioFailurePreference?: number): Record<st
   return trace
 }
 
-function aspectFor(aspectRatio?: string): string {
-  if (!aspectRatio) return 'LANDSCAPE'
-  return ASPECT_TO_BOQ[aspectRatio] ?? aspectRatio
+/**
+ * `MXa(aspectRatio)` — item field 3 carries an **integer**, not the enum name. The bundle maps the
+ * enum to 0 (square) / 1 (landscape) / 2 (portrait) before writing it, and `tN()` picks the model by
+ * matching those integers against the model's supported list. Sending the name — what this did —
+ * is a type error at a known field number, which is exactly the INVALID_ARGUMENT the server has
+ * been answering with `["wrb.fr","<rpc>",null,…,null,[3],"generic"]`.
+ */
+const ASPECT_INT: Record<string, number> = {
+  SQUARE: 0,
+  LANDSCAPE: 1,
+  LANDSCAPE_4_3: 1,
+  PORTRAIT: 2,
+  PORTRAIT_3_4: 2
+}
+
+function aspectFor(aspectRatio?: string): number {
+  const name = aspectRatio ? (ASPECT_TO_BOQ[aspectRatio] ?? aspectRatio) : 'LANDSCAPE'
+  return ASPECT_INT[name] ?? 1
 }
 
 /** One item of the request, using the field numbers quoted in this file's header. */

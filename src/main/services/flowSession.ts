@@ -835,9 +835,12 @@ export async function callFlowRpcAuto(
   // arg shape the bundle produces and the positional shape older builds accept. A rejected RPC
   // answers with a null payload, so whichever variant returns one is the variant the server wants
   // — and the successful label is logged, turning a guess into a measurement.
+  // Positional array FIRST: measured on a live run, `maseQ` answers `p=0 err=3` to the object form
+  // and `p=1` to the array form, so the object shape this file preferred is not what this
+  // deployment accepts. Keep it as the second attempt rather than dropping it.
   const attempts: { argStyle: FlowArgStyle; atOverride: string; label: string }[] = [
-    { argStyle: 'object', atOverride: '', label: 'object+tokenHalaman' },
-    { argStyle: 'array', atOverride: '', label: 'array+tokenHalaman' }
+    { argStyle: 'array', atOverride: '', label: 'array+tokenHalaman' },
+    { argStyle: 'object', atOverride: '', label: 'object+tokenHalaman' }
   ]
   if (cachedAt) {
     attempts.push({ argStyle: 'object', atOverride: cachedAt, label: 'object+tokenRotasi' })
