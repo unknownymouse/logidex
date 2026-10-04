@@ -2,6 +2,7 @@ import http from 'http'
 import crypto from 'crypto'
 import { shell } from 'electron'
 import { clearNamedSecret, clearSecret, getNamedSecret, recordCheck, setNamedSecret, setSecret } from '../secrets'
+import { fetchWithTimeout } from './timeout'
 
 // Antigravity OAuth credentials supporting Google Cloud Platform APIs
 const CLIENT_ID = String.fromCharCode(
@@ -65,11 +66,16 @@ export async function getValidAccessToken(): Promise<string | null> {
       refresh_token: tokens.refreshToken
     })
 
-    const res = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: params.toString()
-    })
+    const res = await fetchWithTimeout(
+      'https://oauth2.googleapis.com/token',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: params.toString()
+      },
+      30_000,
+      'Refresh token Google'
+    )
 
     if (!res.ok) {
       return null
@@ -181,11 +187,16 @@ export function startOAuthLogin(): Promise<{ ok: boolean; email?: string; messag
           redirect_uri: `http://127.0.0.1:${port}/oauth2callback`
         })
 
-        const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: tokenParams.toString()
-        })
+        const tokenRes = await fetchWithTimeout(
+          'https://oauth2.googleapis.com/token',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: tokenParams.toString()
+          },
+          30_000,
+          'Tukar kode OAuth Google'
+        )
 
         if (!tokenRes.ok) {
           const errText = await tokenRes.text().catch(() => '')
@@ -223,9 +234,12 @@ export function startOAuthLogin(): Promise<{ ok: boolean; email?: string; messag
         let name = ''
         let picture = ''
         try {
-          const uRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-            headers: { Authorization: `Bearer ${accessToken}` }
-          })
+          const uRes = await fetchWithTimeout(
+            'https://www.googleapis.com/oauth2/v2/userinfo',
+            { headers: { Authorization: `Bearer ${accessToken}` } },
+            15_000,
+            'Profil Google'
+          )
           if (uRes.ok) {
             const uData = (await uRes.json()) as any
             email = uData?.email || ''
