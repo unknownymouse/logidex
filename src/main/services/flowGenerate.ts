@@ -45,7 +45,7 @@
  *     6  project id           `hR(a,b) -> _.io(a,6,b)`   (b = the project id)
  *     8  collection id        `Z1a(a,b) -> _.io(a,8,b)`
  *     9  workflow id          `Y1a(a,b) -> _.io(a,9,b)`
- *    11  reCAPTCHA            `iR(a,b) -> _.rp(a,11,b)`   (omitted when the page has no token)
+ *    11  reCAPTCHA            `iR(a,b) -> _.rp(a,11,b)`, b = `_.ZQ(_.YQ(token))` = `{ "1": "<token>", "2": 1 }`
  *
  *   trace `qR`
  *     1  trace id             `H2a(a,b) -> _.io(a,1,b)`
@@ -74,14 +74,21 @@
  *    `UpteDb` GetProjects    used first so we reuse an existing project instead of littering.
  *
  * Not reconstructed (deliberately omitted, never guessed): the `ml` payload object (item field
- * 9 / 7) and the reCAPTCHA wrapper. The bundle itself omits the reCAPTCHA field whenever the
- * page's `grecaptcha.enterprise.execute()` yields nothing, so an absent field is a legal state.
- * If a live run reports either one as missing, `FLOW_DEBUG=1` prints the raw envelope + reply.
+ * 9 / 7). The reCAPTCHA *wrapper* is no longer a guess — `_.ZQ(_.YQ(token))` is
+ * `{ "1": "<token>", "2": 1 }` appended to the repeated context field 11, and the token comes from
+ * `grecaptcha.enterprise.execute(WIZ_global_data.xZbWve, { action: 'VIDEO_GENERATION' })`, run in
+ * the live page by `flowSession.getFlowRecaptchaToken`.
+ *
+ * Generation is reCAPTCHA-gated: the web client submits `enable_prompt_submit_is_trusted_check`
+ * via that action, and a request without the token is answered with a `wrb.fr` entry whose payload
+ * is *null* — `["wrb.fr","<rpc>",null,null,null,[3],"generic"]`, i.e. no id to poll. That is the
+ * exact reply a live run reported before field 11 was filled in.
  */
 import {
   callFlowRpc,
   callFlowRpcAuto,
   downloadFlowMedia,
+  getFlowRecaptchaToken,
   FLOW_ROUTE,
   type FlowRpcResult
 } from './flowSession'
@@ -193,9 +200,13 @@ function metadataField(seed: number): Record<string, unknown> {
 }
 
 /** `_.cu(iR(hR(_.cK(new _.dK), projectId), recaptcha))` — the shared context message. */
-function contextField(projectId: string | null): Record<string, unknown> {
+function contextField(projectId: string | null, recaptchaToken?: string): Record<string, unknown> {
   const context: Record<string, unknown> = { 2: 22 }
   if (projectId) context[6] = projectId
+  // `iR(context, _.ZQ(_.YQ(token)))`. The nesting is load-bearing: `_.YQ(t)` is `M1a{1: t}` and
+  // `_.ZQ(m)` sets `m{2: 1}`, so field 11 is a *repeated message*, not a string. Sending the bare
+  // token string is rejected exactly like sending nothing.
+  if (recaptchaToken) context[11] = [{ 1: recaptchaToken, 2: 1 }]
   return context
 }
 
@@ -246,7 +257,8 @@ export function buildGenerateRequest(
   mode: FlowGenMode,
   params: FlowBridgeGenParams,
   projectId: string | null,
-  count = 1
+  count = 1,
+  recaptchaToken?: string
 ): Record<string, unknown> {
   const baseSeed = params.seed ?? randomSeed()
   const items = Array.from({ length: Math.max(1, count) }, (_v, i) =>
@@ -254,8 +266,19 @@ export function buildGenerateRequest(
   )
   return {
     1: items,
-    2: contextField(projectId),
+    2: contextField(projectId, recaptchaToken),
     3: traceField(params.traceId ?? randomUUID(), params.audioFailurePreference)
+  }
+}
+
+/** The envelope as sent, with base64 bodies collapsed — for the error text the user pastes back. */
+function describeRequest(request: unknown): string {
+  try {
+    return JSON.stringify(request, (_k, v) =>
+      typeof v === 'string' && v.length > 200 ? `<${v.length} chars>` : v
+    ).slice(0, 1200)
+  } catch {
+    return '<tidak bisa diserialisasi>'
   }
 }
 
@@ -276,10 +299,13 @@ export function rpcForMode(mode: FlowGenMode): string {
 
 export function modeForParams(params: FlowBridgeGenParams): FlowGenMode {
   if (params.mode) return params.mode
-  // A lone first frame still rides `BatchAsyncGenerateVideoStartAndEndImage` (`nprQif`) with a
-  // null last frame: that is the route the REST twin exposes and the one the storyboard used, so
-  // it stays the default. `START_FRAME` (`eb1hJf`) is opt-in through `params.mode`.
-  if (params.firstFrameMediaId) return 'START_END_FRAMES'
+  // This is the bundle's own branch: both frames -> `nprQif` (StartAndEndImage), a lone first
+  // frame -> `eb1hJf` (StartImage), nothing -> `YhhmEf` (text). The old default sent `nprQif` with
+  // a *null* last frame, which is a route the web client never produces — and asking
+  // StartAndEndImage for a video with no end frame is the kind of request the server answers with
+  // an empty payload.
+  if (params.firstFrameMediaId && params.lastFrameMediaId) return 'START_END_FRAMES'
+  if (params.firstFrameMediaId) return 'START_FRAME'
   return 'TEXT'
 }
 
@@ -498,8 +524,11 @@ export async function submitBridgeGeneration(
   const projectId =
     opts.projectId !== undefined ? opts.projectId : (params.projectId ?? (await ensureFlowProject()))
 
-  const request = buildGenerateRequest(mode, params, projectId ?? null, opts.count ?? 1)
-  debug('submit', rpcId, mode, JSON.stringify(request))
+  // Generation is reCAPTCHA-gated. The token carries the action, so it has to be minted per RPC.
+  const recaptchaToken = await getFlowRecaptchaToken('VIDEO_GENERATION')
+
+  const request = buildGenerateRequest(mode, params, projectId ?? null, opts.count ?? 1, recaptchaToken)
+  debug('submit', rpcId, mode, recaptchaToken ? 'recaptcha=ok' : 'recaptcha=MISSING', JSON.stringify(request))
 
   const res = await callFlowRpcAuto(rpcId, request, FLOW_ROUTE)
   debug('submit reply', rpcId, res.status, res.stage ?? '', res.raw.slice(0, 800))
@@ -511,7 +540,9 @@ export async function submitBridgeGeneration(
   if (!ids.length) {
     throw new Error(
       'Flow membalas tanpa id media/operasi, jadi status tidak bisa dilacak. ' +
-        `Payload mentah: ${res.raw.slice(0, 600)}`
+        `reCAPTCHA: ${recaptchaToken ? 'terkirim' : 'KOSONG (site key/grecaptcha tidak siap di halaman)'}. ` +
+        `Payload mentah: ${res.raw.slice(0, 600)}. ` +
+        `Envelope terkirim: ${describeRequest(request)}`
     )
   }
   return { mode, rpcId, ids, raw: res.payloads, request }

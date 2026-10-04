@@ -130,7 +130,11 @@ async function call(
     if (res.status === 401 || res.status === 403) {
       throw new Error(
         `Google Flow menolak kredensial (HTTP ${res.status}): ${detail}. ` +
-          'Pastikan akun Google yang tersambung punya akses ke Google Flow (labs.google/fx/tools/flow).'
+          'Jalur OAuth REST ini hanya menerima token dengan scope khusus API Labs Google: token ' +
+          'OAuth Antigravity/Gemini (scope cloud-platform) dijawab "insufficient authentication ' +
+          'scopes" bahkan setelah login ulang. Generate video karena itu dijalankan lewat sesi ' +
+          'login Flow (cookie bridge) - pastikan jendela Flow sudah login ke akun yang punya ' +
+          'akses labs.google/fx/tools/flow.'
       )
     }
     throw new Error(`Google Flow error (HTTP ${res.status}): ${detail}`)

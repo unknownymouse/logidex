@@ -11,8 +11,9 @@
  * bridge rots two weeks later.
  *
  * The request runs *inside* the loaded page so same-origin cookies, the Origin header and the
- * framework XSRF token all behave exactly as they do for the real web client. We never
- * hand-roll SAPISIDHASH, and we never need the `at` token (this build does not use one).
+ * framework XSRF token all behave exactly as they do for the real web client — we never hand-roll
+ * SAPISIDHASH. Two values are still ours to supply: `at` (the anti-XSRF token, harvested from
+ * `WIZ_global_data.SNlM0e`) and, for generation, a reCAPTCHA Enterprise token.
  */
 import { app, BrowserWindow, session } from 'electron'
 import { appendFileSync, mkdirSync, renameSync, statSync } from 'node:fs'
@@ -37,6 +38,8 @@ const READY_POLL_MS = 500
 const PAGE_PROBE_TIMEOUT_MS = 20_000
 const PAGE_RPC_TIMEOUT_MS = 180_000
 const PAGE_DOWNLOAD_TIMEOUT_MS = 180_000
+/** reCAPTCHA Enterprise issues a token in ~1s, but the widget script may still be loading. */
+const PAGE_RECAPTCHA_TIMEOUT_MS = 45_000
 /**
  * In-page fetch deadline. Deliberately *below* the executeJavaScript deadline so the page gives up
  * first: the failure then arrives as a readable result instead of a dead call we can only time out.
@@ -422,6 +425,83 @@ function rpcScript(rpcId: string, argsJson: string, sourcePath: string, atOverri
   const xsrf = (/"xsrf"\\s*:\\s*"([^"]+)"/.exec(text) || [])[1] || ''
   return JSON.stringify({ ok: res.ok, status: res.status, payloads: payloads, raw: text.slice(0, 4000), xsrf: xsrf })
 })()`
+}
+
+/**
+ * Runs inside the page. Flow gates its mutating RPCs behind reCAPTCHA Enterprise: the web client
+ * reads the site key from `WIZ_global_data.xZbWve` and calls
+ * `grecaptcha.enterprise.execute(siteKey, { action })` before it builds the context, wrapping the
+ * result as `_.ZQ(_.YQ(token))` in context field 11. Generation without that token comes back as a
+ * `wrb.fr` entry with a *null* payload — an empty answer that carries no id to poll.
+ *
+ * The action is part of the token, so it must be the same string the bundle uses: `VIDEO_GENERATION`
+ * for generate, `UPLOAD_IMAGE` / `IMAGE_GENERATION` / `AUDIO_GENERATION` elsewhere.
+ */
+function recaptchaScript(action: string): string {
+  return `(async () => {
+  const ACTION = ${JSON.stringify(action)}
+
+  function findWiz() {
+    const direct = window.WIZ_global_data
+    if (direct && typeof direct.eptZe === 'string') return direct
+    for (const k of Object.getOwnPropertyNames(window)) {
+      try {
+        const v = window[k]
+        if (v && typeof v === 'object' && typeof v.eptZe === 'string') return v
+      } catch (e) {}
+    }
+    return null
+  }
+
+  try {
+    const wiz = findWiz()
+    const siteKey = wiz && typeof wiz.xZbWve === 'string' ? wiz.xZbWve : ''
+    if (!siteKey) {
+      return JSON.stringify({ ok: false, token: '', error: 'WIZ_global_data.xZbWve (site key reCAPTCHA) tidak ada' })
+    }
+    const g = window.grecaptcha
+    if (!g || !g.enterprise) {
+      return JSON.stringify({ ok: false, token: '', error: 'grecaptcha.enterprise belum dimuat di halaman' })
+    }
+
+    // The bundle waits for ready() before executing; a token asked for too early resolves to ''.
+    await new Promise((resolve) => {
+      let settled = false
+      const fin = () => { if (!settled) { settled = true; resolve() } }
+      setTimeout(fin, 10000)
+      try { g.enterprise.ready(fin) } catch (e) { fin() }
+    })
+
+    const token = await g.enterprise.execute(siteKey, { action: ACTION })
+    return JSON.stringify({ ok: typeof token === 'string' && !!token, token: typeof token === 'string' ? token : '' })
+  } catch (e) {
+    return JSON.stringify({ ok: false, token: '', error: String(e) })
+  }
+})()`
+}
+
+/**
+ * One reCAPTCHA Enterprise token for `action`, executed in the live Flow page.
+ *
+ * Never throws and never returns a partial value: the caller decides whether an empty token is
+ * fatal. It is logged either way, because "generation rejected" and "we never sent a token" look
+ * identical in the server's reply.
+ */
+export async function getFlowRecaptchaToken(action: string): Promise<string> {
+  try {
+    const target = await ensureFlowLoaded(false)
+    const raw = await execInPage(target, recaptchaScript(action), PAGE_RECAPTCHA_TIMEOUT_MS, `reCAPTCHA ${action}`)
+    const parsed = JSON.parse(raw) as { ok?: boolean; token?: string; error?: string }
+    if (parsed.token) {
+      debug(`reCAPTCHA ${action}: token ok (${parsed.token.length} chars)`)
+      return parsed.token
+    }
+    debug(`reCAPTCHA ${action} GAGAL:`, parsed.error ?? 'token kosong')
+    return ''
+  } catch (e) {
+    debug(`reCAPTCHA ${action} GAGAL (exception):`, e instanceof Error ? e.message : String(e))
+    return ''
+  }
 }
 
 /** Which wire shape the RPC arguments take. See `toPositionalArgs`. */

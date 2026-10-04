@@ -781,8 +781,157 @@ async function synthesizeAntigravityTts(
 }
 
 /**
- * Generates speech audio using Google TTS via Antigravity OAuth or Gemini API Key.
- * Returns standard 24kHz mono 16-bit WAV audio buffer.
+ * Natural-language styling for the Gemini TTS models.
+ *
+ * Those models take prosody direction as ordinary prompt text, so the gap between a robotic read
+ * and a narrator lives entirely in this string. Split per language, so Indonesian narration does
+ * not inherit an English cadence.
+ */
+function ttsStyleInstruction(languageCode: string): string {
+  if ((languageCode || 'id').toLowerCase().startsWith('id')) {
+    return (
+      'Bacakan naskah berikut sebagai narator dokumenter sejarah yang hangat dan berpengalaman. ' +
+      'Gunakan bahasa Indonesia baku dengan pelafalan jelas dan natural, bukan gaya pembaca berita. ' +
+      'Variasikan intonasi dan tempo antar kalimat, ambil jeda alami di tanda koma dan titik, ' +
+      'pelankan bagian yang reflektif, dan tegaskan bagian yang dramatis. ' +
+      'Jangan pernah terdengar datar atau seperti mesin, dan jangan menambah kata di luar naskah.'
+    )
+  }
+  return (
+    'Read the following script as a warm, experienced documentary narrator. Vary intonation and ' +
+    'pacing between sentences, breathe at commas and periods, soften reflective lines and lean into ' +
+    'dramatic ones. Never sound flat or mechanical, and never add words that are not in the script.'
+  )
+}
+
+/**
+ * The TTS models to try: whatever is configured first, then the known-good preview ids. The old
+ * code defaulted to `gemini-2.5-flash`, which is a text model — it can never return audio, so every
+ * narration fell through to the robotic helper pipeline.
+ */
+function ttsModelCandidates(): string[] {
+  let configured = ''
+  try {
+    const settings = getSettings()
+    configured = (settings.antigravityTtsModel || settings.geminiTtsModel || '').trim()
+  } catch {
+    configured = ''
+  }
+  return [...new Set([configured, 'gemini-2.5-flash-preview-tts', 'gemini-2.5-pro-preview-tts'].filter(Boolean))]
+}
+
+/** One Gemini TTS take, over an OAuth Bearer token or an `AIza…` API key. */
+async function geminiTtsTake(
+  model: string,
+  prompt: string,
+  voice: string,
+  auth: { token?: string; apiKey?: string },
+  signal?: AbortSignal
+): Promise<Buffer | null> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (auth.apiKey) headers['x-goog-api-key'] = auth.apiKey
+  else if (auth.token) headers.Authorization = `Bearer ${auth.token}`
+  else return null
+
+  const init: RequestInit = {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        responseModalities: ['AUDIO'],
+        speechConfig: {
+          voiceConfig: { prebuiltVoiceConfig: { voiceName: voice || 'Charon' } }
+        }
+      }
+    })
+  }
+  if (signal) init.signal = signal
+
+  const res = await fetchWithTimeout(
+    `${GOOGLE_API_BASE}/v1beta/models/${model}:generateContent`,
+    init,
+    90_000,
+    `TTS Gemini (${model})`
+  )
+  if (!res.ok) return null
+
+  const data = (await res.json()) as {
+    candidates?: { content?: { parts?: { inlineData?: { data?: string } }[] } }[]
+  }
+  const b64 = data?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data
+  if (!b64) return null
+
+  const raw = Buffer.from(b64, 'base64')
+  return isWav(raw) ? raw : pcmToWav(raw)
+}
+
+/**
+ * The whole narration in one pass over the Gemini TTS models: pause tags become real silence, and
+ * each spoken segment carries `ttsStyleInstruction`. Segments stay large (sentences, not 150-char
+ * slivers) because every extra chunk is one more splice you can hear.
+ *
+ * Returns null when no model produced audio, so the caller can fall back.
+ */
+async function synthesizeGeminiSpeech(
+  text: string,
+  voice: string,
+  languageCode: string,
+  auth: { token?: string; apiKey?: string },
+  signal?: AbortSignal
+): Promise<Buffer | null> {
+  const style = ttsStyleInstruction(languageCode)
+  const models = ttsModelCandidates()
+  let chosen: string | null = null
+  const wavBuffers: Buffer[] = []
+  const rawParts = text.split(/(<long pause>|<short pause>|\n+)/g).filter((p) => p && p.trim())
+
+  for (const part of rawParts) {
+    if (signal?.aborted) throw new Error('Dibatalkan')
+    const trimmed = part.trim()
+    if (!trimmed) continue
+    if (trimmed === '<long pause>') {
+      wavBuffers.push(await makeSilenceWav(1.2))
+      continue
+    }
+    if (trimmed === '<short pause>') {
+      wavBuffers.push(await makeSilenceWav(0.4))
+      continue
+    }
+    const clean = trimmed.replace(/<[^>]+>/g, '').trim()
+    if (!clean) continue
+
+    for (const chunk of splitSentenceChunks(clean, 600)) {
+      if (signal?.aborted) throw new Error('Dibatalkan')
+      const prompt = style + '\n\n' + chunk
+      // Once a model answers, stay on it: switching mid-narration changes the voice.
+      const order: string[] = chosen ? [chosen, ...models.filter((m) => m !== chosen)] : models
+      let wav: Buffer | null = null
+      for (const model of order) {
+        wav = await geminiTtsTake(model, prompt, voice, auth, signal)
+        if (wav) {
+          chosen = model
+          break
+        }
+      }
+      if (!wav) return null
+      wavBuffers.push(wav)
+    }
+  }
+
+  if (!wavBuffers.length) throw new Error('Teks narasi kosong.')
+  return concatWavBuffers(wavBuffers)
+}
+
+/**
+ * Generates speech audio: 24 kHz mono 16-bit WAV.
+ *
+ * Order matters. The Gemini TTS models go first, authenticated with the connected Google OAuth
+ * access token (or an `AIza…` key) — that is the "Google Gemini" identity, and it is the only path
+ * that accepts a style instruction. The Antigravity helper pipeline is the *last* resort: it has no
+ * style control and can only reach `translate_tts`, which is precisely why the narration used to
+ * sound like a machine. The old order tried it first, so a fully connected Google account produced
+ * the worst voice available.
  */
 export async function speak(
   text: string,
@@ -790,45 +939,28 @@ export async function speak(
   languageCode: string,
   signal?: AbortSignal
 ): Promise<Buffer> {
-  const token = await getValidAccessToken()
-  const rawKey = token || (getSecret('antigravity') ?? '')
-  if (!rawKey.trim()) {
-    throw new Error('Antigravity belum terhubung ke Google OAuth. Silakan masuk dengan Google di Pengaturan.')
+  let token = ''
+  try {
+    token = (await getValidAccessToken()) || ''
+  } catch {
+    token = ''
+  }
+  const rawKey = (token || getSecret('antigravity') || '').trim()
+
+  if (!rawKey) {
+    throw new Error('Google belum terhubung. Masuk dengan Google di Pengaturan untuk membuat narasi.')
   }
 
-  // If using standard Gemini API key (starts with AIza)
-  if (rawKey.trim().startsWith('AIza')) {
-    const model = getSettings().antigravityTtsModel || 'gemini-2.5-flash'
-    const headers = {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': rawKey.trim()
-    }
-    const res = await fetch(`${GOOGLE_API_BASE}/v1beta/models/${model}:generateContent`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        contents: [{ parts: [{ text }] }],
-        generationConfig: {
-          responseModalities: ['AUDIO'],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: voice || 'Charon' }
-            }
-          }
-        }
-      }),
-      signal
-    })
-    if (res.ok) {
-      const data = (await res.json()) as any
-      const b64 = data?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data
-      if (b64) {
-        const raw = Buffer.from(b64, 'base64')
-        return isWav(raw) ? raw : pcmToWav(raw)
-      }
-    }
+  const auth = rawKey.startsWith('AIza') ? { apiKey: rawKey } : { token: rawKey }
+  try {
+    const out = await synthesizeGeminiSpeech(text, voice, languageCode, auth, signal)
+    if (out && out.length > 44) return out
+  } catch (e) {
+    if (signal?.aborted) throw e
+    console.warn('[tts] Gemini TTS gagal, jatuh ke pipeline Antigravity:', String(e))
   }
 
-  // Antigravity Google TTS pipeline with high-precision pause & silence generation
+  // Last resort: no style control, mechanical, but it still makes audio when every TTS model above
+  // is unreachable.
   return synthesizeAntigravityTts(text, languageCode, signal)
 }

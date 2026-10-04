@@ -112,40 +112,45 @@ export async function generateJson(model: string, system: string, prompt: string
   }
 }
 
-/** Speaks one narration line. Returns a WAV file (24 kHz mono 16-bit). */
+/**
+ * Speaks one narration line. Returns a WAV file (24 kHz mono 16-bit).
+ *
+ * Both credential kinds are handed to `antigravity.speak`, which is the one place that knows how
+ * to style the Gemini TTS models (`antigravityTtsModel` / `geminiTtsModel`) and how to turn the
+ * `<long pause>` tags into real silence. Keeping a second copy of that logic here is what made the
+ * API-key path send a `speechMetadata` field the TTS models ignore, so narration came out
+ * unstyled — flat and mechanical — while the OAuth path was delegated anyway.
+ */
 export async function speak(text: string, voice: string, languageCode: string, signal?: AbortSignal): Promise<Buffer> {
-  const oauth = getOAuthStatus()
-  const apiKey = getSecret('gemini')
-  if (oauth.connected && (!apiKey || !apiKey.startsWith('AIza'))) {
-    return antigravity.speak(text, voice, languageCode, signal)
-  }
   try {
-    const res = await client().models.generateContent({
-      model: getSettings().geminiTtsModel,
-      contents: [
-        {
-          role: 'user',
-          parts: [{ text, speechMetadata: { style: 'natural storytelling narrator, clear and engaging, steady pace' } }]
-        }
-      ],
-      config: {
-        abortSignal: signal,
-        responseModalities: ['AUDIO'],
-        speechConfig: {
-          languageCode,
-          voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } }
-        }
-      }
-    })
-    const part = res.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data)
-    if (!part?.inlineData?.data) throw new Error('Gemini tidak mengirim audio')
-    const bytes = Buffer.from(part.inlineData.data, 'base64')
-    if (isWav(bytes)) return bytes
-    const rate = Number(/rate=(\d+)/.exec(part.inlineData.mimeType ?? '')?.[1] ?? 24000)
-    return pcmToWav(bytes, rate)
-  } catch (e) {
+    return await antigravity.speak(text, voice, languageCode, signal)
+  } catch {
     if (signal?.aborted) throw new Error('Dibatalkan')
-    throw friendly(e)
+    // antigravity.speak already tried every TTS model over every credential. One last attempt
+    // through the SDK client, in case the failure was in the raw REST call (headers, proxy)
+    // rather than in the credential itself.
+    try {
+      const res = await client().models.generateContent({
+        model: getSettings().geminiTtsModel,
+        contents: [{ role: 'user', parts: [{ text }] }],
+        config: {
+          abortSignal: signal,
+          responseModalities: ['AUDIO'],
+          speechConfig: {
+            languageCode,
+            voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } }
+          }
+        }
+      })
+      const part = res.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data)
+      if (!part?.inlineData?.data) throw new Error('Gemini tidak mengirim audio')
+      const bytes = Buffer.from(part.inlineData.data, 'base64')
+      if (isWav(bytes)) return bytes
+      const rate = Number(/rate=(\\d+)/.exec(part.inlineData.mimeType ?? '')?.[1] ?? 24000)
+      return pcmToWav(bytes, rate)
+    } catch (inner) {
+      throw friendly(inner)
+    }
   }
 }
 
