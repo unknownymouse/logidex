@@ -17,7 +17,7 @@
  * wrong; the bundle writes an optional context-ish message there. Nothing is sent at 10 now.
  * Response field 1 is the created `Media`; its id is what generation needs.
  */
-import { callFlowRpc, callFlowRpcAuto } from './flowSession'
+import { callFlowRpc, callFlowRpcAuto, getBridgeLogPath } from './flowSession'
 import { buildFlowContext } from './flowGenerate'
 
 /** batchexecute short ids recovered from the bundle (docs/flow-api-re.md §6). */
@@ -118,11 +118,15 @@ export async function uploadImageToFlow(input: FlowUploadInput): Promise<FlowUpl
 
   const res = await callFlowRpcAuto(FLOW_RPC.uploadImage, args)
 
+  // Every rejection names the log file: it holds this request and this response, so one paste
+  // answers the next question instead of prompting another round of guessing.
+  const log = getBridgeLogPath()
+  const hint = log ? ` [log: ${log}]` : ''
   if (res.stage) {
-    throw new Error(`Upload ke Google Flow gagal (${res.stage}): ${res.error ?? 'tidak diketahui'}`)
+    throw new Error(`Upload ke Google Flow gagal (${res.stage}): ${res.error ?? 'tidak diketahui'}${hint}`)
   }
   if (!res.ok) {
-    throw new Error(`Upload ke Google Flow ditolak (HTTP ${res.status}): ${res.raw.slice(0, 400)}`)
+    throw new Error(`Upload ke Google Flow ditolak (HTTP ${res.status}): ${res.raw.slice(0, 400)}${hint}`)
   }
   const err = rpcError(res.payloads)
   if (err) throw new Error(`Upload ke Google Flow error: ${err}`)
