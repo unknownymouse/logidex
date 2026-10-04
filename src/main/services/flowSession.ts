@@ -39,7 +39,7 @@ const PAGE_PROBE_TIMEOUT_MS = 20_000
 const PAGE_RPC_TIMEOUT_MS = 180_000
 const PAGE_DOWNLOAD_TIMEOUT_MS = 180_000
 /** reCAPTCHA Enterprise issues a token in ~1s, but the widget script may still be loading. */
-const PAGE_RECAPTCHA_TIMEOUT_MS = 90_000
+const PAGE_RECAPTCHA_TIMEOUT_MS = 150_000
 /**
  * In-page fetch deadline. Deliberately *below* the executeJavaScript deadline so the page gives up
  * first: the failure then arrives as a readable result instead of a dead call we can only time out.
@@ -550,9 +550,6 @@ function recaptchaScript(action: string): string {
   let via = ''
   let loadNote = ''
 
-  // Canonical key is WIZ_global_data.xZbWve. Fall back to any WIZ string shaped like a site key,
-  // then to the render= of a script tag the app already injected, then to a scan of the document.
-  // A miss here is indistinguishable from a rejected token downstream, so try hard.
   function findSiteKey() {
     const wiz = findWiz()
     if (wiz) {
@@ -575,9 +572,32 @@ function recaptchaScript(action: string): string {
     return ''
   }
 
-  function enterprise() {
+  function enterpriseOrNull() {
     const g = window.grecaptcha
-    return g && g.enterprise && typeof g.enterprise.execute === 'function' ? g.enterprise : null
+    return g && g.enterprise ? g.enterprise : null
+  }
+
+  function sleep(ms) { return new Promise((r) => setTimeout(r, ms)) }
+
+  // reCAPTCHA registers its object a while *after* onload. Sampling once immediately after load
+  // reports "no grecaptcha" on a page that is about to have one, so wait for the object itself.
+  async function waitForEnterprise(ms) {
+    const deadline = Date.now() + ms
+    while (Date.now() < deadline) {
+      const ent = enterpriseOrNull()
+      if (ent) return ent
+      await sleep(300)
+    }
+    return null
+  }
+
+  function ready(ent, ms) {
+    return new Promise((resolve) => {
+      let settled = false
+      const fin = () => { if (!settled) { settled = true; resolve() } }
+      setTimeout(fin, ms)
+      try { ent.ready(fin) } catch (e) { fin() }
+    })
   }
 
   try {
@@ -588,14 +608,15 @@ function recaptchaScript(action: string): string {
       return JSON.stringify({ ok: false, token: '', error: 'site key tidak ketemu. kunci WIZ: ' + keys })
     }
 
-    if (!enterprise()) {
-      await new Promise((resolve) => {
+    let ent = enterpriseOrNull()
+    if (!ent) {
+      const url = 'https://www.google.com/recaptcha/enterprise.js?trustedtypes=true&render=' + encodeURIComponent(siteKey)
+      const event = await new Promise((resolve) => {
         let settled = false
-        const fin = () => { if (!settled) { settled = true; resolve() } }
+        const fin = (what) => { if (!settled) { settled = true; resolve(what) } }
         const existing = document.querySelector('script[src*="recaptcha/enterprise.js"]')
         const script = existing || document.createElement('script')
         if (!existing) {
-          const url = 'https://www.google.com/recaptcha/enterprise.js?trustedtypes=true&render=' + encodeURIComponent(siteKey)
           script.async = true
           script.defer = true
           // Belt and braces in case the policy could not be stripped: reuse the page's own nonce.
@@ -603,32 +624,40 @@ function recaptchaScript(action: string): string {
           const nonce = ref ? (ref.getAttribute('nonce') || ref.nonce || '') : ''
           if (nonce) { try { script.setAttribute('nonce', nonce) } catch (e) {} }
           try { script.src = url } catch (e) {
-            // Under require-trusted-types-for 'script' a bare src assignment throws. The app's own
-            // bundle writes it through a Trusted Types policy, so try the attribute form next.
             loadNote = 'set src gagal: ' + String(e)
             try { script.setAttribute('src', url) } catch (e2) { loadNote += ' | setAttribute gagal: ' + String(e2) }
           }
           document.head.appendChild(script)
         }
-        script.addEventListener('load', fin)
-        script.addEventListener('error', fin)
-        setTimeout(fin, 20000)
+        script.addEventListener('load', () => fin('load'))
+        script.addEventListener('error', () => fin('error'))
+        setTimeout(() => fin('timeout'), 20000)
       })
+      loadNote += (loadNote ? ' | ' : '') + 'event=' + event
+      ent = await waitForEnterprise(20000)
     }
 
-    const ent = enterprise()
     if (!ent) {
-      return JSON.stringify({ ok: false, token: '', error: 'grecaptcha.enterprise kosong setelah enterprise.js disuntik; via=' + via + ' key=' + siteKey.slice(0, 10) + '... ' + loadNote })
+      // Report the page's own state too: "we injected and it never registered" and "the page
+      // already had a grecaptcha we are not seeing" need different fixes.
+      const globals = Object.getOwnPropertyNames(window).filter((k) => /grecaptcha/i.test(k))
+      const state = 'grecaptcha=' + typeof window.grecaptcha +
+        ' enterprise=' + !!(window.grecaptcha && window.grecaptcha.enterprise) +
+        ' tag=' + document.querySelectorAll('script[src*="recaptcha"]').length +
+        ' global=' + globals.join('|')
+      return JSON.stringify({ ok: false, token: '', error: 'grecaptcha kosong setelah menunggu; via=' + via +
+        ' key=' + siteKey.slice(0, 10) + '... ' + loadNote + ' ' + state })
     }
 
-    // The bundle waits for ready() before executing; a token asked for too early resolves to ''.
-    await new Promise((resolve) => {
-      let settled = false
-      const fin = () => { if (!settled) { settled = true; resolve() } }
-      setTimeout(fin, 15000)
-      try { ent.ready(fin) } catch (e) { fin() }
-    })
+    if (typeof ent.execute !== 'function') {
+      await ready(ent, 15000)
+      ent = enterpriseOrNull()
+      if (!ent || typeof ent.execute !== 'function') {
+        return JSON.stringify({ ok: false, token: '', error: 'grecaptcha.enterprise ada tapi execute() belum siap; via=' + via + ' ' + loadNote })
+      }
+    }
 
+    await ready(ent, 15000)
     const token = await ent.execute(siteKey, { action: ACTION })
     if (typeof token !== 'string' || !token) {
       return JSON.stringify({ ok: false, token: '', error: 'execute() kosong untuk action ' + ACTION })
