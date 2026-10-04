@@ -1,4 +1,5 @@
 import crypto from 'node:crypto'
+import { readFile, stat } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import ffmpegStatic from 'ffmpeg-static'
 import { AspectRatio, KeyTestResult, ModelOption, VoiceOption } from '@shared/types'
@@ -16,6 +17,9 @@ import { isWav, pcmToWav } from './audio'
 import { extractJson } from './json'
 import { getOAuthStatus, getValidAccessToken } from './googleOAuth'
 import * as flowService from './flow'
+import * as flowSession from './flowSession'
+import * as flowUpload from './flowUpload'
+import * as flowGenerate from './flowGenerate'
 
 export {
   ANTIGRAVITY_IMAGE_MODELS,
@@ -492,28 +496,128 @@ export async function generateVideo(
   // Google OAuth login (Antigravity client id + `cloud-platform` scope) is accepted by
   // Google Flow's own REST backend, so route the job there instead of cloudcode-pa.
   // Contract + evidence: src/main/services/flow.ts
-  if (imageInput) {
-    // Flow's image-to-video routes take a *mediaId* produced by Flow's own upload step,
-    // not raw bytes, and that upload endpoint is not wired up yet.
-    throw new Error(
-      'Video dari gambar lewat akun Google Flow belum didukung (butuh upload media ke Flow dulu). ' +
-        'Gunakan prompt teks, atau pilih Penyedia Video "Higgsfield" untuk mode gambar-ke-video.'
-    )
-  }
-
   const wireModel =
     modelId && /^(veo|omni)[a-z0-9_-]*$/i.test(modelId) ? modelId : undefined
+  const flowAspect =
+    aspect === '9:16' ? 'VIDEO_ASPECT_RATIO_PORTRAIT' : 'VIDEO_ASPECT_RATIO_LANDSCAPE'
 
-  return await flowService.generateVideo(
-    rawKey.trim(),
-    {
-      prompt,
-      modelKey: wireModel,
-      aspectRatio:
-        aspect === '9:16' ? 'VIDEO_ASPECT_RATIO_PORTRAIT' : 'VIDEO_ASPECT_RATIO_LANDSCAPE'
-    },
-    { signal }
-  )
+  // Single-login: the cookie bridge carries upload *and* generation, so signing into Flow once
+  // (in the bridge window) covers the whole job. The REST route stays behind it as a fallback,
+  // so a machine without a bridge session never regresses. docs/flow-api-re.md §8
+  let bridgeError: string | null = null
+  const viaBridge = async (firstFrameMediaId?: string) => {
+    try {
+      return await flowGenerate.generateVideoViaBridge(
+        { prompt, modelKey: wireModel, aspectRatio: flowAspect, firstFrameMediaId },
+        { signal }
+      )
+    } catch (e) {
+      bridgeError = e instanceof Error ? e.message : String(e)
+      return null
+    }
+  }
+
+  if (imageInput) {
+    // Flow's image-to-video routes take a *mediaId*, not bytes, and no REST endpoint can mint
+    // one — only the logged-in web session can (docs/flow-api-re.md §6). So: upload through the
+    // cookie bridge, then generate on the same session — one login, no OAuth.
+    const frame = await toFlowFrame(imageInput)
+    let uploaded: flowUpload.FlowUploadResult
+    try {
+      uploaded = await flowUpload.uploadImageToFlow(frame)
+    } catch (e) {
+      if ((await flowSession.getFlowSessionStatus()).loggedIn) throw e
+      // First run on this machine: ask the human to log into Flow once, then retry the job.
+      const login = await flowSession.openFlowLogin()
+      if (!login.ok) throw new Error(login.message)
+      uploaded = await flowUpload.uploadImageToFlow(frame)
+    }
+    const bridged = await viaBridge(uploaded.mediaId)
+    if (bridged) return bridged
+
+    try {
+      return await flowService.generateVideo(
+        rawKey.trim(),
+        { prompt, modelKey: wireModel, aspectRatio: flowAspect, firstFrameMediaId: uploaded.mediaId },
+        { signal }
+      )
+    } catch (e) {
+      if (bridgeError) {
+        throw new Error(
+          `${e instanceof Error ? e.message : String(e)} (jalur bridge juga gagal: ${bridgeError})`
+        )
+      }
+      throw e
+    }
+  }
+
+  const bridgedText = await viaBridge()
+  if (bridgedText) return bridgedText
+
+  try {
+    return await flowService.generateVideo(
+      rawKey.trim(),
+      { prompt, modelKey: wireModel, aspectRatio: flowAspect },
+      { signal }
+    )
+  } catch (e) {
+    if (bridgeError) {
+      throw new Error(
+        `${e instanceof Error ? e.message : String(e)} (jalur bridge juga gagal: ${bridgeError})`
+      )
+    }
+    throw e
+  }
+}
+
+/** Normalise whatever the caller passes as an image into bytes + mime for a Flow upload. */
+async function toFlowFrame(imageInput: Buffer | string): Promise<flowUpload.FlowUploadInput> {
+  if (Buffer.isBuffer(imageInput)) {
+    return { bytes: imageInput, mimeType: sniffImageMime(imageInput) }
+  }
+  const value = imageInput.trim()
+
+  const dataUrl = /^data:([^;,]+)(;base64)?,(.*)$/s.exec(value)
+  if (dataUrl) {
+    return { bytes: Buffer.from(dataUrl[3], 'base64'), mimeType: dataUrl[1] || 'image/png' }
+  }
+  if (/^https?:\/\//i.test(value)) {
+    const res = await fetch(value)
+    if (!res.ok) throw new Error(`Gagal mengambil gambar untuk Flow (HTTP ${res.status})`)
+    const bytes = Buffer.from(await res.arrayBuffer())
+    return {
+      bytes,
+      mimeType: res.headers.get('content-type')?.split(';')[0] || sniffImageMime(bytes)
+    }
+  }
+  const fromDisk = await readLocalFile(value)
+  if (fromDisk) return { bytes: fromDisk, mimeType: sniffImageMime(fromDisk) }
+
+  // Otherwise it is raw base64 — what the storyboard pipeline hands over.
+  const bytes = Buffer.from(value.replace(/^data:[^,]+,/, ''), 'base64')
+  if (!bytes.length) throw new Error('Gambar untuk Flow kosong atau tidak terbaca.')
+  return { bytes, mimeType: sniffImageMime(bytes) }
+}
+
+async function readLocalFile(path: string): Promise<Buffer | null> {
+  try {
+    if (!(await stat(path)).isFile()) return null
+    return await readFile(path)
+  } catch {
+    return null
+  }
+}
+
+function sniffImageMime(bytes: Buffer): string {
+  if (bytes.length > 8 && bytes[0] === 0x89 && bytes.toString('ascii', 1, 4) === 'PNG') {
+    return 'image/png'
+  }
+  if (bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return 'image/jpeg'
+  }
+  if (bytes.length > 12 && bytes.toString('ascii', 0, 4) === 'RIFF') return 'image/webp'
+  if (bytes.length > 6 && bytes.toString('ascii', 0, 3) === 'GIF') return 'image/gif'
+  return 'image/png'
 }
 
 function splitSentenceChunks(text: string, maxLen = 150): string[] {
