@@ -14,17 +14,36 @@
  * framework XSRF token all behave exactly as they do for the real web client. We never
  * hand-roll SAPISIDHASH, and we never need the `at` token (this build does not use one).
  */
-import { BrowserWindow, session } from 'electron'
+import { app, BrowserWindow, session } from 'electron'
+import { appendFileSync, mkdirSync, renameSync, statSync } from 'node:fs'
+import { join } from 'node:path'
+import { TimeoutError, withTimeout } from './timeout'
 
 export const FLOW_ORIGIN = 'https://labs.google'
 export const FLOW_ROUTE = '/fx/tools/flow'
 const FLOW_URL = `${FLOW_ORIGIN}${FLOW_ROUTE}`
 const PARTITION = 'persist:flow-bridge'
-const LOGIN_TIMEOUT_MS = 5 * 60 * 1000
 const HARVEST_POLL_MS = 1500
+/**
+ * How long the human gets, once the window is in front of them. Long enough for a password plus a
+ * 2FA prompt on a second device, short enough that a walk-away ends in a message instead of a
+ * spinner that runs all evening.
+ */
+const LOGIN_TIMEOUT_MS = 10 * 60 * 1000
 /** How long to wait for *a document*, not for the network to go quiet — see waitForDocument. */
 const FLOW_READY_TIMEOUT_MS = 60000
 const READY_POLL_MS = 500
+/** A page script that never settles must not hang a job — see execInPage. */
+const PAGE_PROBE_TIMEOUT_MS = 20_000
+const PAGE_RPC_TIMEOUT_MS = 180_000
+const PAGE_DOWNLOAD_TIMEOUT_MS = 180_000
+/**
+ * In-page fetch deadline. Deliberately *below* the executeJavaScript deadline so the page gives up
+ * first: the failure then arrives as a readable result instead of a dead call we can only time out.
+ */
+const RPC_FETCH_TIMEOUT_MS = 150_000
+/** The always-on bridge log rolls over at this size. */
+const LOG_MAX_BYTES = 256 * 1024
 /**
  * Google walls its sign-in off inside clients it recognises as embedded ("this browser or app may
  * not be secure"). The bridge really is Chromium, so present it as one; `FLOW_UA=default` restores
@@ -61,8 +80,50 @@ let win: BrowserWindow | null = null
 let loadPromise: Promise<void> | null = null
 let loginPromise: Promise<{ ok: boolean; message: string }> | null = null
 
+let logPath: string | null = null
+
+/**
+ * Always-on log file, next to the app's database.
+ *
+ * FLOW_DEBUG only reaches a console nobody is watching on the user's machine, so a failed run used
+ * to leave no evidence at all. This file is written unconditionally (and rolls over) so "it just
+ * sits there" can be answered with a file instead of another round of guessing.
+ */
+export function getBridgeLogPath(): string {
+  if (logPath !== null) return logPath
+  try {
+    const dir = app.getPath('userData')
+    mkdirSync(dir, { recursive: true })
+    logPath = join(dir, 'flow-bridge.log')
+  } catch {
+    logPath = ''
+  }
+  return logPath
+}
+
+function safeJson(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? String(value)
+  } catch {
+    return String(value)
+  }
+}
+
 function debug(...args: unknown[]): void {
   if (process.env.FLOW_DEBUG) console.log('[flow-bridge]', ...args)
+  try {
+    const file = getBridgeLogPath()
+    if (!file) return
+    try {
+      if (statSync(file).size > LOG_MAX_BYTES) renameSync(file, `${file}.1`)
+    } catch {
+      /* no log yet */
+    }
+    const line = `${new Date().toISOString()} ${args.map((a) => (typeof a === 'string' ? a : safeJson(a))).join(' ')}\n`
+    appendFileSync(file, line)
+  } catch {
+    /* logging must never break the bridge */
+  }
 }
 
 function getWindow(show: boolean): BrowserWindow {
@@ -139,7 +200,7 @@ interface FlowPageProbe {
 async function probe(target: BrowserWindow): Promise<FlowPageProbe | null> {
   if (target.isDestroyed()) return null
   try {
-    const raw = (await target.webContents.executeJavaScript(probeScript(), true)) as string
+    const raw = await execInPage(target, probeScript(), PAGE_PROBE_TIMEOUT_MS, 'Membaca halaman Flow')
     return JSON.parse(raw) as FlowPageProbe
   } catch {
     return null
@@ -176,6 +237,23 @@ async function waitForDocument(target: BrowserWindow, timeoutMs = FLOW_READY_TIM
     await delay(READY_POLL_MS)
   }
   throw new Error(`Halaman Flow tidak selesai dimuat (${describeProbe(last)})`)
+}
+
+/**
+ * Run a page script under a deadline.
+ *
+ * `executeJavaScript` settles only when the page's script settles. A stalled `fetch` inside that
+ * script — or a renderer that never becomes responsive — leaves the promise pending forever, and
+ * no deadline the caller wrapped around *other* work is ever re-evaluated. That single unbounded
+ * await is what turned a failed upload into an endless "10%" spinner with no error to report.
+ */
+async function execInPage(target: BrowserWindow, script: string, timeoutMs: number, label: string): Promise<string> {
+  const raw = await withTimeout(
+    target.webContents.executeJavaScript(script, true) as Promise<unknown>,
+    timeoutMs,
+    label
+  )
+  return typeof raw === 'string' ? raw : safeJson(raw ?? null)
 }
 
 /** Navigate the bridge window to Flow once, tolerating the redirect chain Google throws at it. */
@@ -267,18 +345,25 @@ function rpcScript(rpcId: string, argsJson: string, sourcePath: string): string 
 
   const body = 'f.req=' + encodeURIComponent(JSON.stringify([[[RPC_ID, ARGS, null, 'generic']]]))
 
+  // Without a deadline this request can hang on a stalled socket — a multi-megabyte image body, a
+  // connection that is never closed — and the executeJavaScript call around it hangs with it.
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), ${RPC_FETCH_TIMEOUT_MS})
   let res, text
   try {
     res = await fetch(base + 'data/batchexecute?' + qs.toString(), {
       method: 'POST',
       credentials: 'include',
       body: body,
+      signal: ctrl.signal,
       headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }
     })
     text = await res.text()
   } catch (e) {
     return JSON.stringify({ ok: false, status: 0, payloads: [], raw: '',
       stage: 'fetch', error: String(e) })
+  } finally {
+    clearTimeout(timer)
   }
 
   // A missing f.sid alone is not proof of a logged-out session, but a 401/403 or a login page
@@ -343,9 +428,36 @@ export async function callFlowRpc(
   opts: { argStyle?: FlowArgStyle } = {}
 ): Promise<FlowRpcResult> {
   const payload = opts.argStyle === 'array' ? toPositionalArgs(args) : args
-  const target = await ensureFlowLoaded(false)
   const script = rpcScript(rpcId, JSON.stringify(payload ?? []), sourcePath)
-  const raw = (await target.webContents.executeJavaScript(script, true)) as string
+
+  const attempt = async (): Promise<string> => {
+    const target = await ensureFlowLoaded(false)
+    return execInPage(target, script, PAGE_RPC_TIMEOUT_MS, `RPC ${rpcId}`)
+  }
+
+  let raw: string
+  try {
+    raw = await attempt()
+  } catch (e) {
+    if (!(e instanceof TimeoutError)) throw e
+    // The page is wedged or the request stalled. A reload keeps the partition cookies and gives the
+    // renderer a clean slate, so retry once before reporting — then report honestly.
+    debug(rpcId, 'timeout:', e.message, '-> reload halaman lalu coba sekali lagi')
+    const target = getWindow(false)
+    if (target.isDestroyed()) {
+      return { ok: false, status: 0, payloads: [], raw: '', stage: 'timeout', error: e.message }
+    }
+    try {
+      await target.webContents.reload()
+      loadPromise = null
+      raw = await attempt()
+    } catch (retry) {
+      const message = retry instanceof Error ? retry.message : String(retry)
+      debug(rpcId, 'percobaan ulang gagal:', message)
+      return { ok: false, status: 0, payloads: [], raw: '', stage: 'timeout', error: message }
+    }
+  }
+
   let parsed: FlowRpcResult
   try {
     parsed = JSON.parse(raw) as FlowRpcResult
@@ -378,8 +490,10 @@ export async function callFlowRpcAuto(
 function downloadScript(url: string): string {
   return `(async () => {
   const url = ${JSON.stringify(url)}
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), ${RPC_FETCH_TIMEOUT_MS})
   try {
-    const res = await fetch(url, { credentials: 'include' })
+    const res = await fetch(url, { credentials: 'include', signal: ctrl.signal })
     if (!res.ok) return JSON.stringify({ ok: false, status: res.status, error: 'HTTP ' + res.status })
     const bytes = new Uint8Array(await res.arrayBuffer())
     let bin = ''
@@ -390,6 +504,8 @@ function downloadScript(url: string): string {
       contentType: res.headers.get('content-type') || '', base64: btoa(bin) })
   } catch (e) {
     return JSON.stringify({ ok: false, status: 0, error: String(e) })
+  } finally {
+    clearTimeout(timer)
   }
 })()`
 }
@@ -408,7 +524,12 @@ export interface FlowDownloadResult {
  */
 export async function downloadFlowMedia(url: string): Promise<FlowDownloadResult> {
   const target = await ensureFlowLoaded(false)
-  const raw = (await target.webContents.executeJavaScript(downloadScript(url), true)) as string
+  let raw: string
+  try {
+    raw = await execInPage(target, downloadScript(url), PAGE_DOWNLOAD_TIMEOUT_MS, 'Mengunduh media Flow')
+  } catch (e) {
+    return { ok: false, status: 0, error: e instanceof Error ? e.message : String(e) }
+  }
   try {
     const parsed = JSON.parse(raw) as { ok: boolean; status: number; contentType?: string; base64?: string; error?: string }
     if (!parsed.ok || !parsed.base64) {
@@ -430,7 +551,12 @@ export async function getFlowSessionStatus(): Promise<FlowSessionStatus> {
   if (!win || win.isDestroyed()) return { open: false, loggedIn: false }
   try {
     const res = await callFlowRpc('nzlxg', [], FLOW_ROUTE)
-    return { open: true, loggedIn: res.ok || !(res.stage === 'login' || res.stage === 'wiz') }
+    // Only a definite answer counts as a live session. The old `!(login || wiz)` test reported a
+    // stalled page ('timeout'/'fetch') as logged in, which skipped the sign-in prompt the user
+    // actually needed — and the job then died much later with a far less useful message.
+    const unusable =
+      res.stage === 'wiz' || res.stage === 'login' || res.stage === 'timeout' || res.stage === 'fetch'
+    return { open: true, loggedIn: !unusable }
   } catch {
     return { open: true, loggedIn: false }
   }
@@ -452,14 +578,31 @@ export async function openFlowLogin(): Promise<{ ok: boolean; message: string }>
     const deadline = Date.now() + LOGIN_TIMEOUT_MS
     let last = ''
     while (Date.now() < deadline) {
-      const res = await callFlowRpc('nzlxg', [], FLOW_ROUTE)
-      if (res.stage === 'wiz' || res.stage === 'login') {
-        last = res.error ?? ''
-      } else {
+      let res: FlowRpcResult | null = null
+      try {
+        res = await callFlowRpc('nzlxg', [], FLOW_ROUTE)
+      } catch (e) {
+        // A throw here used to end the whole login wait. Keep waiting: the user may still be typing.
+        last = e instanceof Error ? e.message : String(e)
+        debug('cek sesi gagal:', last)
+      }
+      if (res && res.stage !== 'wiz' && res.stage !== 'login' && res.stage !== 'timeout' && res.stage !== 'fetch') {
         target.hide()
         return { ok: true, message: 'Google Flow terhubung' }
       }
-      await new Promise((r) => setTimeout(r, HARVEST_POLL_MS))
+      if (res) {
+        last = res.error ?? ''
+        if (res.stage === 'timeout') {
+          // The user is looking straight at this window; hand them a fresh page, not a wedge.
+          debug('halaman tidak merespons saat menunggu login, reload')
+          try {
+            await target.webContents.reload()
+          } catch {
+            /* the window may be closing */
+          }
+        }
+      }
+      await delay(HARVEST_POLL_MS)
     }
     return {
       ok: false,

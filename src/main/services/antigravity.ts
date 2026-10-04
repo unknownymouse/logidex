@@ -20,6 +20,7 @@ import * as flowService from './flow'
 import * as flowSession from './flowSession'
 import * as flowUpload from './flowUpload'
 import * as flowGenerate from './flowGenerate'
+import { fetchWithTimeout, withTimeout } from './timeout'
 
 export {
   ANTIGRAVITY_IMAGE_MODELS,
@@ -438,7 +439,19 @@ export async function generateImage(
 }
 
 /**
+ * Budgets for the cookie-bridge path. Every stage is bounded so a stall turns into a message
+ * instead of a progress bar that never moves again.
+ */
+const FLOW_UPLOAD_BUDGET_MS = 5 * 60 * 1000
+const FLOW_BRIDGE_BUDGET_MS = 12 * 60 * 1000
+
+/**
  * Generates video using Google Veo with Antigravity / Google OAuth.
+ *
+ * Transport order is deliberate. The **cookie bridge runs first**: Flow's image-to-video routes
+ * take a media id that only a logged-in web session can mint, and the bridge needs no OAuth at all
+ * — so a single sign-in to Flow covers upload *and* generation. The REST surface (OAuth bearer)
+ * stays behind it as the fallback for a machine with no bridge session.
  */
 export async function generateVideo(
   prompt: string,
@@ -448,11 +461,12 @@ export async function generateVideo(
   modelId?: string,
   signal?: AbortSignal
 ): Promise<{ bytes: Buffer; contentType: string }> {
-  const token = await getValidAccessToken()
-  const rawKey = token || (getSecret('antigravity') ?? '')
-  if (!rawKey.trim()) {
-    throw new Error('Antigravity belum terhubung ke Google OAuth. Silakan masuk dengan Google di Pengaturan.')
-  }
+  // Bounded *and* non-fatal. An unbounded token refresh used to be the very first await in this
+  // function, so a stalled request to oauth2.googleapis.com left the job parked on its first
+  // progress step with nothing to report. The bridge needs no token: a failed refresh must never
+  // be able to kill the job.
+  const token = await getValidAccessToken().catch(() => null)
+  const rawKey = (token || getSecret('antigravity') || '').trim()
 
   const model = modelId || getSettings().antigravityVideoModel || 'veo-2.0-generate-001'
   const b64Image =
@@ -504,12 +518,16 @@ export async function generateVideo(
   // Single-login: the cookie bridge carries upload *and* generation, so signing into Flow once
   // (in the bridge window) covers the whole job. The REST route stays behind it as a fallback,
   // so a machine without a bridge session never regresses. docs/flow-api-re.md §8
-  let bridgeError: string | null = null
+    let bridgeError: string | null = null
   const viaBridge = async (firstFrameMediaId?: string) => {
     try {
-      return await flowGenerate.generateVideoViaBridge(
-        { prompt, modelKey: wireModel, aspectRatio: flowAspect, firstFrameMediaId },
-        { signal }
+      return await withTimeout(
+        flowGenerate.generateVideoViaBridge(
+          { prompt, modelKey: wireModel, aspectRatio: flowAspect, firstFrameMediaId },
+          { signal }
+        ),
+        FLOW_BRIDGE_BUDGET_MS,
+        'Membuat video lewat sesi Flow'
       )
     } catch (e) {
       bridgeError = e instanceof Error ? e.message : String(e)
@@ -517,56 +535,68 @@ export async function generateVideo(
     }
   }
 
+  const viaRest = (firstFrameMediaId?: string) =>
+    flowService.generateVideo(
+      rawKey,
+      { prompt, modelKey: wireModel, aspectRatio: flowAspect, firstFrameMediaId },
+      { signal }
+    )
+
+  /** Both transports failed: report once, with the bridge's own reason and the log to read. */
+  const exhausted = (e: unknown): Error => {
+    const detail = e instanceof Error ? e.message : String(e)
+    if (!bridgeError) return e instanceof Error ? e : new Error(detail)
+    const log = flowSession.getBridgeLogPath()
+    return new Error(`${detail} (jalur bridge juga gagal: ${bridgeError})${log ? ` [log: ${log}]` : ''}`)
+  }
+
+  /** Nothing left to try: say what would fix it, instead of a generic failure. */
+  const noTransport = (): Error => {
+    const log = flowSession.getBridgeLogPath()
+    return new Error(
+      'Tidak bisa memakai Google Flow dan tidak ada Google OAuth untuk jalur cadangan. ' +
+        'Masuk ke Google Flow di jendela "Masuk ke Google Flow", lalu coba lagi.' +
+        (bridgeError ? ` Bridge: ${bridgeError}` : '') +
+        (log ? ` [log: ${log}]` : '')
+    )
+  }
+
   if (imageInput) {
     // Flow's image-to-video routes take a *mediaId*, not bytes, and no REST endpoint can mint
-    // one — only the logged-in web session can (docs/flow-api-re.md §6). So: upload through the
-    // cookie bridge, then generate on the same session — one login, no OAuth.
+    // one -- only the logged-in web session can (docs/flow-api-re.md section 6). So: upload through
+    // the cookie bridge, then generate on the same session: one login, no OAuth.
     const frame = await toFlowFrame(imageInput)
+    const upload = () =>
+      withTimeout(flowUpload.uploadImageToFlow(frame), FLOW_UPLOAD_BUDGET_MS, 'Upload gambar ke Flow')
     let uploaded: flowUpload.FlowUploadResult
     try {
-      uploaded = await flowUpload.uploadImageToFlow(frame)
+      uploaded = await upload()
     } catch (e) {
       if ((await flowSession.getFlowSessionStatus()).loggedIn) throw e
       // First run on this machine: ask the human to log into Flow once, then retry the job.
       const login = await flowSession.openFlowLogin()
       if (!login.ok) throw new Error(login.message)
-      uploaded = await flowUpload.uploadImageToFlow(frame)
+      uploaded = await upload()
     }
     const bridged = await viaBridge(uploaded.mediaId)
     if (bridged) return bridged
+    if (!rawKey) throw noTransport()
 
     try {
-      return await flowService.generateVideo(
-        rawKey.trim(),
-        { prompt, modelKey: wireModel, aspectRatio: flowAspect, firstFrameMediaId: uploaded.mediaId },
-        { signal }
-      )
+      return await viaRest(uploaded.mediaId)
     } catch (e) {
-      if (bridgeError) {
-        throw new Error(
-          `${e instanceof Error ? e.message : String(e)} (jalur bridge juga gagal: ${bridgeError})`
-        )
-      }
-      throw e
+      throw exhausted(e)
     }
   }
 
   const bridgedText = await viaBridge()
   if (bridgedText) return bridgedText
+  if (!rawKey) throw noTransport()
 
   try {
-    return await flowService.generateVideo(
-      rawKey.trim(),
-      { prompt, modelKey: wireModel, aspectRatio: flowAspect },
-      { signal }
-    )
+    return await viaRest()
   } catch (e) {
-    if (bridgeError) {
-      throw new Error(
-        `${e instanceof Error ? e.message : String(e)} (jalur bridge juga gagal: ${bridgeError})`
-      )
-    }
-    throw e
+    throw exhausted(e)
   }
 }
 
@@ -582,7 +612,7 @@ async function toFlowFrame(imageInput: Buffer | string): Promise<flowUpload.Flow
     return { bytes: Buffer.from(dataUrl[3], 'base64'), mimeType: dataUrl[1] || 'image/png' }
   }
   if (/^https?:\/\//i.test(value)) {
-    const res = await fetch(value)
+    const res = await fetchWithTimeout(value, {}, 30_000, 'Mengambil gambar untuk Flow')
     if (!res.ok) throw new Error(`Gagal mengambil gambar untuk Flow (HTTP ${res.status})`)
     const bytes = Buffer.from(await res.arrayBuffer())
     return {

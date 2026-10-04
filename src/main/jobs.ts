@@ -43,14 +43,21 @@ export function runJob(job: Job, queue: QueueName, task: Task): Job {
   const ctrl = new AbortController()
   controllers.set(job.id, ctrl)
   let lastEmit = 0
+  let lastMessage: string | undefined
   const ctx: TaskCtx = {
     jobId: job.id,
     signal: ctrl.signal,
     progress: (p, message) => {
       const now = Date.now()
       const j = updateJob(job.id, { progress: Math.min(0.99, Math.max(0, p)), ...(message !== undefined ? { message } : {}) })
-      if (now - lastEmit > 250 || p >= 0.99) {
+      // A *message* change is the thing the user reads, so emit it immediately. The 250 ms gate is
+      // only meant to throttle monotonic progress ticks — and it used to swallow the very
+      // transition that says what the job is doing ("Membaca gambar klip" -> "Membuat video"), so
+      // the panel kept showing a step the job had already left, which reads as "stuck".
+      const messageChanged = message !== undefined && message !== lastMessage
+      if (messageChanged || now - lastEmit > 250 || p >= 0.99) {
         lastEmit = now
+        lastMessage = message ?? lastMessage
         emit.job(j)
       }
     },
