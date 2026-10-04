@@ -19,6 +19,7 @@ import { getOAuthStatus, getValidAccessToken } from './googleOAuth'
 import * as flowService from './flow'
 import * as flowSession from './flowSession'
 import * as flowUpload from './flowUpload'
+import * as flowGenerate from './flowGenerate'
 
 export {
   ANTIGRAVITY_IMAGE_MODELS,
@@ -500,10 +501,26 @@ export async function generateVideo(
   const flowAspect =
     aspect === '9:16' ? 'VIDEO_ASPECT_RATIO_PORTRAIT' : 'VIDEO_ASPECT_RATIO_LANDSCAPE'
 
+  // Single-login: the cookie bridge carries upload *and* generation, so signing into Flow once
+  // (in the bridge window) covers the whole job. The REST route stays behind it as a fallback,
+  // so a machine without a bridge session never regresses. docs/flow-api-re.md §8
+  let bridgeError: string | null = null
+  const viaBridge = async (firstFrameMediaId?: string) => {
+    try {
+      return await flowGenerate.generateVideoViaBridge(
+        { prompt, modelKey: wireModel, aspectRatio: flowAspect, firstFrameMediaId },
+        { signal }
+      )
+    } catch (e) {
+      bridgeError = e instanceof Error ? e.message : String(e)
+      return null
+    }
+  }
+
   if (imageInput) {
     // Flow's image-to-video routes take a *mediaId*, not bytes, and no REST endpoint can mint
     // one — only the logged-in web session can (docs/flow-api-re.md §6). So: upload through the
-    // cookie bridge, then generate over the OAuth route with `firstFrame`.
+    // cookie bridge, then generate on the same session — one login, no OAuth.
     const frame = await toFlowFrame(imageInput)
     let uploaded: flowUpload.FlowUploadResult
     try {
@@ -515,23 +532,42 @@ export async function generateVideo(
       if (!login.ok) throw new Error(login.message)
       uploaded = await flowUpload.uploadImageToFlow(frame)
     }
-    return await flowService.generateVideo(
-      rawKey.trim(),
-      {
-        prompt,
-        modelKey: wireModel,
-        aspectRatio: flowAspect,
-        firstFrameMediaId: uploaded.mediaId
-      },
-      { signal }
-    )
+    const bridged = await viaBridge(uploaded.mediaId)
+    if (bridged) return bridged
+
+    try {
+      return await flowService.generateVideo(
+        rawKey.trim(),
+        { prompt, modelKey: wireModel, aspectRatio: flowAspect, firstFrameMediaId: uploaded.mediaId },
+        { signal }
+      )
+    } catch (e) {
+      if (bridgeError) {
+        throw new Error(
+          `${e instanceof Error ? e.message : String(e)} (jalur bridge juga gagal: ${bridgeError})`
+        )
+      }
+      throw e
+    }
   }
 
-  return await flowService.generateVideo(
-    rawKey.trim(),
-    { prompt, modelKey: wireModel, aspectRatio: flowAspect },
-    { signal }
-  )
+  const bridgedText = await viaBridge()
+  if (bridgedText) return bridgedText
+
+  try {
+    return await flowService.generateVideo(
+      rawKey.trim(),
+      { prompt, modelKey: wireModel, aspectRatio: flowAspect },
+      { signal }
+    )
+  } catch (e) {
+    if (bridgeError) {
+      throw new Error(
+        `${e instanceof Error ? e.message : String(e)} (jalur bridge juga gagal: ${bridgeError})`
+      )
+    }
+    throw e
+  }
 }
 
 /** Normalise whatever the caller passes as an image into bytes + mime for a Flow upload. */

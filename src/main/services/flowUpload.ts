@@ -7,15 +7,18 @@
  * `/FlowService.UploadImage` (short id `maseQ`), which requires the logged-in session. Hence
  * upload here (bridge), generate over REST (OAuth). See docs/flow-api-re.md §6.
  *
- * `maseQ` request field map, positional (index = field - 1), recovered from the bundle:
- *   1  context (project/collection)        6  -
- *   2  image bytes, base64                 7  crop coordinates
- *   3  mimeType                            8  isHidden
- *   4  crop flag (web client sends true)   9  fileName
- *   5  -                                  10  dimensions { width, height }
+ * `maseQ` request field map, recovered from the bundle (`_.rp`/`_.Mv` calls in `mod_XRV0Af.js`):
+ *   1  context (project id lives at field 6 of it)   8  isHidden
+ *   2  image bytes, base64                          9  fileName
+ *   3  mimeType                                    11  seed (int, optional)
+ *   4  crop flag (web client sends true)           14  client config (optional)
+ *   7  crop coordinates (optional)
+ * An earlier draft of this file documented field 10 as `dimensions` — that was a guess and is
+ * wrong; the bundle writes an optional context-ish message there. Nothing is sent at 10 now.
  * Response field 1 is the created `Media`; its id is what generation needs.
  */
-import { callFlowRpc } from './flowSession'
+import { callFlowRpc, callFlowRpcAuto } from './flowSession'
+import { buildFlowContext } from './flowGenerate'
 
 /** batchexecute short ids recovered from the bundle (docs/flow-api-re.md §6). */
 export const FLOW_RPC = {
@@ -98,21 +101,20 @@ export async function uploadImageToFlow(input: FlowUploadInput): Promise<FlowUpl
   const mimeType = input.mimeType ?? 'image/png'
   const fileName = input.fileName ?? 'frame.png'
 
-  // Positional jspb array: index = field - 1.
-  const args: unknown[] = []
-  args[0] = input.context ?? null // 1 context
-  args[1] = input.bytes.toString('base64') // 2 bytes
-  args[2] = mimeType // 3 mimeType
-  args[3] = input.crop ?? true // 4 crop flag
-  args[6] = null // 7 crop coordinates
-  args[7] = false // 8 isHidden
-  args[8] = fileName // 9 fileName
-  args[9] =
-    input.width && input.height ? { width: input.width, height: input.height } : null // 10
+  // jspb `toObject` serialises a request as a plain object whose keys are *field numbers*,
+  // so the wire shape is `{"1":…,"3":…}` — not a positional array. `callFlowRpcAuto` retries the
+  // positional form anyway, because that older encoding was what the first draft used.
+  const args: Record<string, unknown> = {
+    1: input.context ?? (await buildFlowContext()), // context (project/collection)
+    2: input.bytes.toString('base64'), // bytes
+    3: mimeType, // mimeType
+    4: input.crop ?? true, // crop flag
+    8: false, // isHidden
+    9: fileName // fileName
+  }
+  if (input.width && input.height) args[10] = { 1: input.width, 2: input.height }
 
-  while (args.length && args[args.length - 1] === null) args.pop()
-
-  const res = await callFlowRpc(FLOW_RPC.uploadImage, args)
+  const res = await callFlowRpcAuto(FLOW_RPC.uploadImage, args)
 
   if (res.stage) {
     throw new Error(`Upload ke Google Flow gagal (${res.stage}): ${res.error ?? 'tidak diketahui'}`)

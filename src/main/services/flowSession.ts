@@ -152,15 +152,10 @@ function rpcScript(rpcId: string, argsJson: string, sourcePath: string): string 
   const sid = strs.find((v) => /^\\d{15,25}$/.test(v)) || ''
   const bl = strs.find((v) => v.startsWith('boq_')) || ''
   const base = typeof wiz.eptZe === 'string' ? wiz.eptZe : '/_/AiSandboxAngularFrontend/'
-  if (!sid) {
-    return JSON.stringify({ ok: false, status: 0, payloads: [], raw: '',
-      stage: 'login', error: 'Sesi Flow belum aktif - silakan login di jendela ini' })
-  }
 
   const qs = new URLSearchParams({
     rpcids: RPC_ID,
     'source-path': SOURCE || location.pathname,
-    'f.sid': sid,
     bl: bl,
     hl: 'en',
     'soc-app': '1',
@@ -169,6 +164,10 @@ function rpcScript(rpcId: string, argsJson: string, sourcePath: string): string 
     rt: 'c',
     _reqid: String(100000 + Math.floor(Math.random() * 899999))
   })
+  // f.sid is per-session bookkeeping, not authentication: send it when the page exposes it,
+  // but never refuse the call without it. Cookies carry the auth.
+  if (sid) qs.set('f.sid', sid)
+
   const body = 'f.req=' + encodeURIComponent(JSON.stringify([[[RPC_ID, ARGS, null, 'generic']]]))
 
   let res, text
@@ -183,6 +182,13 @@ function rpcScript(rpcId: string, argsJson: string, sourcePath: string): string 
   } catch (e) {
     return JSON.stringify({ ok: false, status: 0, payloads: [], raw: '',
       stage: 'fetch', error: String(e) })
+  }
+
+  // A missing f.sid alone is not proof of a logged-out session, but a 401/403 or a login page
+  // in the body is: that is what the caller uses to decide whether to ask the human to sign in.
+  if (!sid && (res.status === 401 || res.status === 403 || /accounts\\.google\\.com|ServiceLogin/.test(text))) {
+    return JSON.stringify({ ok: false, status: res.status, payloads: [], raw: text.slice(0, 2000),
+      stage: 'login', error: 'Sesi Flow belum aktif - silakan login di jendela ini' })
   }
 
   const payloads = []
@@ -203,14 +209,45 @@ function rpcScript(rpcId: string, argsJson: string, sourcePath: string): string 
 })()`
 }
 
+/** Which wire shape the RPC arguments take. See `toPositionalArgs`. */
+export type FlowArgStyle = 'object' | 'array'
+
+/**
+ * boq serialises a request with `JSON.stringify(msg.toObject())`, i.e. a plain object keyed by
+ * the *field number as a string* (`{"1":…,"3":…}`) — that is the form the bundle produces
+ * (`XC(transport,"f.req", request.je())`). Older batchexecute builds accept the positional
+ * array form instead, so this converts one to the other and `callFlowRpcAuto` tries both.
+ */
+export function toPositionalArgs(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(toPositionalArgs)
+  if (value && typeof value === 'object') {
+    const obj = value as Record<string, unknown>
+    let max = 0
+    for (const key of Object.keys(obj)) {
+      const n = Number(key)
+      if (Number.isInteger(n) && n > max) max = n
+    }
+    if (!max) return {}
+    const out: unknown[] = []
+    for (let i = 1; i <= max; i += 1) {
+      const v = obj[String(i)]
+      out.push(v === undefined ? null : toPositionalArgs(v))
+    }
+    return out
+  }
+  return value
+}
+
 /** Execute one batchexecute RPC through the logged-in Flow page. */
 export async function callFlowRpc(
   rpcId: string,
   args: unknown,
-  sourcePath = FLOW_ROUTE
+  sourcePath = FLOW_ROUTE,
+  opts: { argStyle?: FlowArgStyle } = {}
 ): Promise<FlowRpcResult> {
+  const payload = opts.argStyle === 'array' ? toPositionalArgs(args) : args
   const target = await ensureFlowLoaded(false)
-  const script = rpcScript(rpcId, JSON.stringify(args ?? []), sourcePath)
+  const script = rpcScript(rpcId, JSON.stringify(payload ?? []), sourcePath)
   const raw = (await target.webContents.executeJavaScript(script, true)) as string
   let parsed: FlowRpcResult
   try {
@@ -221,6 +258,74 @@ export async function callFlowRpc(
   debug(rpcId, '->', parsed.status, parsed.stage ?? '', parsed.error ?? '')
   if (process.env.FLOW_DEBUG) console.log('[flow-bridge] raw:', parsed.raw)
   return parsed
+}
+
+/**
+ * Run an RPC with the proto-JSON object form, falling back to the positional array form when the
+ * server answers 200 with an empty body (a marshal-level rejection leaves no `wrb.fr` payload).
+ * Costs at most one extra request, and pins the wire shape on the first live run.
+ */
+export async function callFlowRpcAuto(
+  rpcId: string,
+  args: unknown,
+  sourcePath = FLOW_ROUTE
+): Promise<FlowRpcResult> {
+  const objectForm = await callFlowRpc(rpcId, args, sourcePath, { argStyle: 'object' })
+  if (objectForm.stage || !objectForm.ok || objectForm.payloads.length > 0) return objectForm
+  debug(rpcId, 'object form returned no payload; retrying positional array form')
+  const arrayForm = await callFlowRpc(rpcId, args, sourcePath, { argStyle: 'array' })
+  return arrayForm.payloads.length > 0 ? arrayForm : objectForm
+}
+
+/** Runs inside the page: fetch a Fife/media URL with the session cookies and hand back base64. */
+function downloadScript(url: string): string {
+  return `(async () => {
+  const url = ${JSON.stringify(url)}
+  try {
+    const res = await fetch(url, { credentials: 'include' })
+    if (!res.ok) return JSON.stringify({ ok: false, status: res.status, error: 'HTTP ' + res.status })
+    const bytes = new Uint8Array(await res.arrayBuffer())
+    let bin = ''
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000))
+    }
+    return JSON.stringify({ ok: true, status: res.status,
+      contentType: res.headers.get('content-type') || '', base64: btoa(bin) })
+  } catch (e) {
+    return JSON.stringify({ ok: false, status: 0, error: String(e) })
+  }
+})()`
+}
+
+export interface FlowDownloadResult {
+  ok: boolean
+  status: number
+  contentType?: string
+  bytes?: Buffer
+  error?: string
+}
+
+/**
+ * Download a produced video through the session. Flow's media URLs (Fife) are cookie-scoped, so
+ * the fetch has to happen inside the page rather than in the main process.
+ */
+export async function downloadFlowMedia(url: string): Promise<FlowDownloadResult> {
+  const target = await ensureFlowLoaded(false)
+  const raw = (await target.webContents.executeJavaScript(downloadScript(url), true)) as string
+  try {
+    const parsed = JSON.parse(raw) as { ok: boolean; status: number; contentType?: string; base64?: string; error?: string }
+    if (!parsed.ok || !parsed.base64) {
+      return { ok: false, status: parsed.status ?? 0, error: parsed.error ?? 'unduhan kosong' }
+    }
+    return {
+      ok: true,
+      status: parsed.status,
+      contentType: parsed.contentType,
+      bytes: Buffer.from(parsed.base64, 'base64')
+    }
+  } catch {
+    return { ok: false, status: 0, error: 'Respons unduhan bukan JSON' }
+  }
 }
 
 /** True once the page exposes a usable session (used before deciding to prompt for login). */

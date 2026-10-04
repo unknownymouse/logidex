@@ -261,9 +261,11 @@ media id:
    reCAPTCHA site key, not an XSRF token).
 4. `uploadImageToFlow()` sends `maseQ` with the positional field map from §6, then extracts the
    media id from the response.
-5. Generation stays on the **OAuth REST** route
-   (`/v1/video:batchAsyncGenerateVideoStartAndEndImage`) with `firstFrame: { mediaId }`. The split
-   is deliberate: the REST surface can *consume* a media id but cannot *mint* one.
+5. Generation used to stay on the **OAuth REST** route
+   (`/v1/video:batchAsyncGenerateVideoStartAndEndImage`) with `firstFrame: { mediaId }`, because the
+   REST surface can *consume* a media id but cannot *mint* one. **Superseded by §8**: generation,
+   polling and download now ride the same cookie session as the upload, so one login covers a whole
+   job. The REST route survives only as a fallback.
 
 Login is lazy — the first image-to-video job opens the window, waits for Google, then continues
 the job it was asked to do. `FLOW_DEBUG=1` dumps every RPC id, its HTTP status and the first 4 kB
@@ -277,4 +279,91 @@ Verified offline: the endpoint, the `f.req` envelope, the auth model, the `maseQ
 Needs one live run: the per-session scalar harvest and the media-id position inside the upload
 response. Run an image-to-video job with `FLOW_DEBUG=1`; the raw dump names the offending step
 immediately.
+
+## 8. Single login — generation over the cookie bridge
+
+Section 5 left a video job needing **two** sessions: the Flow browser session to mint a media id,
+and the OAuth token to generate. Generation now rides the same page as the upload, so one sign-in
+to Flow covers upload → generate → poll → download. The REST/OAuth route stays behind it as a
+fallback (`flow.ts` is untouched), so a machine without a bridge session does not regress.
+
+### Wire format, settled from the bundle
+
+`boq` serialises a request with `JSON.stringify(msg.toObject())`, so arguments are a plain object
+whose **keys are field numbers**, and the body is
+
+```
+f.req = [[[ "<rpcid>", "<args as a JSON string>", null, "generic" ]]]
+```
+
+Evidence in `mod_XRV0Af.js`:
+
+```js
+je(a){ return JSON.stringify(oc(this, a)) }   // toObject -> numeric-string keys
+XC(k, "f.req", f.je())                        // body
+```
+
+The older positional-array encoding is widely circulated, so `callFlowRpcAuto` sends the object
+form first and retries the positional form when the server answers 200 with no `wrb.fr` payload.
+
+### RPC ids (`new _.Gx(...)` table)
+
+| short id | service |
+|---|---|
+| `YhhmEf` | `/FlowService.BatchAsyncGenerateVideoText` |
+| `eb1hJf` | `...BatchAsyncGenerateVideoStartImage` |
+| `nprQif` | `...BatchAsyncGenerateVideoStartAndEndImage` |
+| `jwpduf` | `...BatchCheckAsyncVideoGenerationStatus` |
+| `maseQ` | `/FlowService.UploadImage` |
+| `UpteDb` | list projects · `jHPbke` create project (`/AiSandbox.CreateProject`) |
+
+### Request fields
+
+Envelope `{ 1: items[], 2: context, 3: trace }`.
+
+- **context** `{ 2: 22, 6: projectId, 11: recaptcha }` — `_.cK` writes 2, `hR` writes 6, `iR`
+  writes 11. When the page's reCAPTCHA call yields nothing the client omits 11, so it is optional.
+- **trace** `{ 1: traceId, 2: audioFailurePreference, 4: destination }` — `H2a`/`I2a`/`J2a`.
+- **prompt** `{ 3: { 1: [ { 1: "<text>" } ] } }` — item field 1 is
+  `_.cu(C4a(new D4a, c.zj))`, `C4a` writes field 3, the parts message repeats at field 1, and a
+  part's text sits at field 1.
+- **frame** `{ 2: { 1: mediaId }, 6: crop }` with crop `{1: top, 2: left, 3: bottom, 4: right}` —
+  `cQ` writes the media at 2, `bQ` writes the crop at 6.
+- **metadata** `{ 1: ve, 2: workflowId, 3: wb, 5: seed, 6: extra }` — only the seed is filled.
+- **aspect ratio** is a proto enum, so its JSON is the *name* (`LANDSCAPE`, `PORTRAIT`, `SQUARE`,
+  `LANDSCAPE_4_3`, `PORTRAIT_3_4` — from `_.rJ`), **not** the `VIDEO_ASPECT_RATIO_*` string that the
+  public REST API takes.
+- **count** is not a field: the web client emits one item per requested video.
+
+Per-item field numbers, per mode. Metadata moves between 5/6/7 — that is not a typo:
+
+| mode | rpc | prompt | model | aspect | first frame | last frame | metadata | resolution |
+|---|---|---|---|---|---|---|---|---|
+| TEXT | `YhhmEf` | 1 | 2 | 3 | – | – | 5 | 8 |
+| START_FRAME | `eb1hJf` | 1 | 2 | 3 | 5 | – | 6 | 10 |
+| START_END_FRAMES | `nprQif` | 1 | 2 | 3 | 5 | 6 | 7 | – |
+
+A lone first frame still uses `nprQif` with no last frame — that is the route the REST twin exposes
+and the one the storyboard used, so `modeForParams` keeps it as the default.
+
+### Status
+
+Request `{ 3: [ { 1: id } ] }` (`t5a`); the response repeats at field 3, each item carrying its id
+at field 1 and a status string at field 3, with the finished media hanging off fields 2/6. The
+parser walks the tree for a URL or a base64 payload instead of hardcoding a path.
+
+### Project id
+
+Lives in `context` field 6. Resolved once per process: `UpteDb` → first project id, otherwise
+`jHPbke` with request `{ 2: { 2: { 1: name } }, 3: context }`, whose response carries the id at
+field 1 (`_.hK.mc()`). Cached for the process; a null result is logged, not fatal.
+
+### Still unverified (one live run pins all four)
+
+1. object-form vs positional-form arguments,
+2. the reCAPTCHA field (currently omitted),
+3. where the submit response carries the media id (generic id scan for now),
+4. whether the aspect enum wants a name or an index.
+
+`FLOW_DEBUG=1` dumps the exact request and response for each, so each fix is a single field number.
 

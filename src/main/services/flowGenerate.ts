@@ -1,0 +1,637 @@
+/**
+ * Flow **generation** over the cookie bridge — the single-login path.
+ *
+ * Why this file exists
+ * --------------------
+ * `/v1/video:batchAsyncGenerateVideo*` on `aisandbox-pa.googleapis.com` speaks OAuth, and
+ * `/FlowService.UploadImage` does not exist on that surface at all (every upload path 404s).
+ * So the previous design needed *two* identities: an OAuth token for generation and a browser
+ * session for upload. That is a bad user experience and a worse security story.
+ *
+ * The web client generates through the same batchexecute endpoint it uploads through, so this
+ * module ports the generation RPCs across. Result: one Google login (the bridge window) drives
+ * upload, generation, status polling and download.
+ *
+ * Field maps — recovered from the production bundle
+ * -------------------------------------------------
+ * `mod_XRV0Af.js` (`boq_labs-ai-sandbox-frontend_20261002.00_p0`). The app builds its request
+ * with jspb builders and serialises it via `transport.Nb = request; XC(transport, 'f.req',
+ * request.je())`, where `je()` is `JSON.stringify(toObject(request))` — i.e. the wire payload is
+ * proto-JSON **keyed by field number as a string**. Every index below is a real proto field
+ * number, quoted from the builder that sets it:
+ *
+ *   envelope (request, one per $4a/l5a/f5a/… class)
+ *     1  repeated item        `X4a(a,b) -> _.Bv(a,1,array)`      (one item per generation)
+ *     2  context              `Y4a(a,b) -> _.rp(a,2,obj)`
+ *     3  trace                `Z4a(a,b) -> _.rp(a,3,obj)`
+ *
+ *   item, text-to-video (`YhhmEf`, class `h5a`)
+ *     1  prompt               `G = _.rp(G,1,h)`
+ *     2  videoModelKey        `G = _.Mv(G,2,c.Qg)`
+ *     3  aspectRatio          `.setAspectRatio(c.aspectRatio)`   (enum name in JSON)
+ *     5  metadata             `D = _.rp(G,5,D)`
+ *     7  ml (unknown object)  `D = _.rp(D,7,c.ml)`
+ *     8  resolution           `G = _.rp(G,8,J)`
+ *
+ *   item, image-to-video (`eb1hJf`, class `b5a`) /
+ *   item, first+last frame (`nprQif`, class `W4a`)
+ *     1  prompt, 2 videoModelKey, 3 aspectRatio                       (identical to above)
+ *     5  firstFrame           `D = _.rp(D,5,G)`   G = `bQ(cQ(new dQ, c.lN), NN(c.kN))`
+ *     6  lastFrame / metadata `nprQif` puts lastFrame here, `eb1hJf` puts metadata here
+ *     7  metadata (`nprQif` only), 9 ml, 10 resolution (`eb1hJf` only)
+ *
+ *   context `_.dK`
+ *     2  constant 22          `_.cK(new _.dK) -> _.up(a,2,22)`
+ *     6  project id           `hR(a,b) -> _.io(a,6,b)`   (b = the project id)
+ *     8  collection id        `Z1a(a,b) -> _.io(a,8,b)`
+ *     9  workflow id          `Y1a(a,b) -> _.io(a,9,b)`
+ *    11  reCAPTCHA            `iR(a,b) -> _.rp(a,11,b)`   (omitted when the page has no token)
+ *
+ *   trace `qR`
+ *     1  trace id             `H2a(a,b) -> _.io(a,1,b)`
+ *     2  audio preference     `I2a(a,b) -> _.up(a,2,b)`
+ *     4  destination          `J2a(a,b) -> _.Av(a,4,G2a,b)`
+ *
+ *   frames
+ *     `cQ(a,mediaId) -> _.Nv(a,2,B4a,mediaId)`  -> `{ "2": { "1": "<mediaId>" } }`
+ *     `bQ(a,crop)    -> _.rp(a,6,crop)`         -> `{ "6": { "1": top, "2": left, "3": bottom, "4": right } }`
+ *     `NN(crop)` sets those four ints (`_.Ic(b,1,_.tb(a.top),0)` …)
+ *
+ *   metadata `_.fy` (`l(seed)` in the bundle)
+ *     1  destination scene    `_.Mv(V,1,destination?.yka?.ve)`
+ *     2  workflow id          `_.Mv(V,2,destination?.workflowId)`
+ *     3  collection id        `_.Mv(V,3,destination.wb)`
+ *     5  **seed**             `_.io(V,5,d[i])`
+ *     6  per-item extra       `_.io(V,6,e?.[i])`
+ *
+ *   status (`jwpduf`, class `u5a`)
+ *    3  repeated ids          `t5a(a,b) -> _.Bv(a,3,array)`, each `_.Lx{ 1: id }`
+ *       … and the *response* reuses field 3: `_.Lx{ 1: id, 3: status string }`
+ *
+ *   project
+ *    `jHPbke` CreateProject  request `{ 2: { 2: { 1: name } }, 3: context }`; response `_.hK`,
+ *                            whose `mc()` is `_.Z(this,1)` — the project id lives at field 1.
+ *    `UpteDb` GetProjects    used first so we reuse an existing project instead of littering.
+ *
+ * Not reconstructed (deliberately omitted, never guessed): the `ml` payload object (item field
+ * 9 / 7) and the reCAPTCHA wrapper. The bundle itself omits the reCAPTCHA field whenever the
+ * page's `grecaptcha.enterprise.execute()` yields nothing, so an absent field is a legal state.
+ * If a live run reports either one as missing, `FLOW_DEBUG=1` prints the raw envelope + reply.
+ */
+import {
+  callFlowRpc,
+  callFlowRpcAuto,
+  downloadFlowMedia,
+  FLOW_ROUTE,
+  type FlowRpcResult
+} from './flowSession'
+
+/** batchexecute short ids, all confirmed against the bundle's `new _.Gx(...)` table. */
+export const FLOW_BOQ_RPC = {
+  generateFromText: 'YhhmEf',
+  generateFromStartImage: 'eb1hJf',
+  generateFromStartAndEndImage: 'nprQif',
+  checkStatus: 'jwpduf',
+  getProjects: 'UpteDb',
+  createProject: 'jHPbke',
+  getProject: 'ngNC2',
+  uploadImage: 'maseQ',
+  credits: 'nzlxg'
+} as const
+
+/** Flow's own enum names (`_.rJ`) — these are what land in the JSON for a proto enum field. */
+const ASPECT_TO_BOQ: Record<string, string> = {
+  VIDEO_ASPECT_RATIO_LANDSCAPE: 'LANDSCAPE',
+  VIDEO_ASPECT_RATIO_PORTRAIT: 'PORTRAIT',
+  VIDEO_ASPECT_RATIO_SQUARE: 'SQUARE',
+  VIDEO_ASPECT_RATIO_LANDSCAPE_4_3: 'LANDSCAPE_4_3',
+  VIDEO_ASPECT_RATIO_PORTRAIT_3_4: 'PORTRAIT_3_4',
+  LANDSCAPE: 'LANDSCAPE',
+  PORTRAIT: 'PORTRAIT',
+  SQUARE: 'SQUARE',
+  LANDSCAPE_4_3: 'LANDSCAPE_4_3',
+  PORTRAIT_3_4: 'PORTRAIT_3_4'
+}
+
+export type FlowGenMode = 'TEXT' | 'START_FRAME' | 'START_END_FRAMES'
+
+/** Flow wire model key used when the caller does not pin one (same default as the REST route). */
+export const DEFAULT_FLOW_MODEL_KEY = 'veo_3_1_t2v_fast'
+
+export interface FlowBridgeFrameCrop {
+  top: number
+  left: number
+  bottom: number
+  right: number
+}
+
+export interface FlowBridgeGenParams {
+  prompt: string
+  /** Flow wire model key (`c.Qg`). Defaults to `DEFAULT_FLOW_MODEL_KEY`. */
+  modelKey?: string
+  /** Force a specific RPC instead of inferring it from the frames. */
+  mode?: FlowGenMode
+  aspectRatio?: string
+  /** Seeds the per-item metadata (field 5). Random when absent. */
+  seed?: number
+  /** Flow project id (`c.ya`). Resolved automatically when absent. */
+  projectId?: string
+  firstFrameMediaId?: string
+  lastFrameMediaId?: string
+  crop?: FlowBridgeFrameCrop
+  /** `c.td` — a per-request trace id. Random UUID when absent. */
+  traceId?: string
+  /** 1 = fail the job when the source has audio the model cannot carry. */
+  audioFailurePreference?: number
+}
+
+export interface FlowBridgeStatusItem {
+  id?: string
+  status?: string
+  url?: string
+  base64?: string
+  done: boolean
+  failed: boolean
+}
+
+export interface FlowBridgeStatus {
+  items: FlowBridgeStatusItem[]
+  raw: unknown
+  error?: string
+}
+
+let cachedProjectId: string | null = null
+
+function debug(...args: unknown[]): void {
+  if (process.env.FLOW_DEBUG) console.log('[flow-bridge]', ...args)
+}
+
+// ---------------------------------------------------------------------------------------------
+// payload builders
+// ---------------------------------------------------------------------------------------------
+
+function randomSeed(): number {
+  return Math.floor(Math.random() * 2147483647)
+}
+
+/** `_.cu(C4a(new D4a, zj))` — the prompt message: field 3 holds the structured prompt, whose
+ *  field 1 is the repeated parts, each part's field 1 being the literal text. */
+function promptField(prompt: string): Record<string, unknown> {
+  return { 3: { 1: [{ 1: prompt }] } }
+}
+
+/** `_.cu(bQ(cQ(new dQ, mediaId), crop))` — frame reference at item field 5 / 6. */
+function frameField(mediaId: string, crop?: FlowBridgeFrameCrop): Record<string, unknown> {
+  const frame: Record<string, unknown> = { 2: { 1: mediaId } }
+  if (crop) frame[6] = { 1: crop.top, 2: crop.left, 3: crop.bottom, 4: crop.right }
+  return frame
+}
+
+/** `l(i)` — per-item metadata. Only the seed is known to matter; the rest mirror `destination`. */
+function metadataField(seed: number): Record<string, unknown> {
+  return { 5: seed }
+}
+
+/** `_.cu(iR(hR(_.cK(new _.dK), projectId), recaptcha))` — the shared context message. */
+function contextField(projectId: string | null): Record<string, unknown> {
+  const context: Record<string, unknown> = { 2: 22 }
+  if (projectId) context[6] = projectId
+  return context
+}
+
+/** `_.cu(J2a(I2a(H2a(new qR, traceId), audioPreference), destination))`. */
+function traceField(traceId: string, audioFailurePreference?: number): Record<string, unknown> {
+  const trace: Record<string, unknown> = { 1: traceId }
+  if (audioFailurePreference != null) trace[2] = audioFailurePreference
+  return trace
+}
+
+function aspectFor(aspectRatio?: string): string {
+  if (!aspectRatio) return 'LANDSCAPE'
+  return ASPECT_TO_BOQ[aspectRatio] ?? aspectRatio
+}
+
+/** One item of the request, using the field numbers quoted in this file's header. */
+export function buildGenerateItem(
+  mode: FlowGenMode,
+  params: FlowBridgeGenParams,
+  seed: number
+): Record<string, unknown> {
+  const item: Record<string, unknown> = {
+    1: promptField(params.prompt),
+    2: params.modelKey ?? DEFAULT_FLOW_MODEL_KEY,
+    3: aspectFor(params.aspectRatio)
+  }
+
+  if (mode === 'TEXT') {
+    item[5] = metadataField(seed)
+    return item
+  }
+
+  if (params.firstFrameMediaId) item[5] = frameField(params.firstFrameMediaId, params.crop)
+
+  if (mode === 'START_END_FRAMES') {
+    if (params.lastFrameMediaId) item[6] = frameField(params.lastFrameMediaId)
+    item[7] = metadataField(seed)
+    return item
+  }
+
+  // START_FRAME — metadata sits at field 6 here, not 5.
+  item[6] = metadataField(seed)
+  return item
+}
+
+/** The whole `$4a`/`l5a`/`f5a` request: items + context + trace. */
+export function buildGenerateRequest(
+  mode: FlowGenMode,
+  params: FlowBridgeGenParams,
+  projectId: string | null,
+  count = 1
+): Record<string, unknown> {
+  const baseSeed = params.seed ?? randomSeed()
+  const items = Array.from({ length: Math.max(1, count) }, (_v, i) =>
+    buildGenerateItem(mode, params, baseSeed + i)
+  )
+  return {
+    1: items,
+    2: contextField(projectId),
+    3: traceField(params.traceId ?? randomUUID(), params.audioFailurePreference)
+  }
+}
+
+function randomUUID(): string {
+  // crypto.randomUUID is available in the Electron main process (Node 18+).
+  try {
+    return globalThis.crypto.randomUUID()
+  } catch {
+    return `${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}`
+  }
+}
+
+export function rpcForMode(mode: FlowGenMode): string {
+  if (mode === 'TEXT') return FLOW_BOQ_RPC.generateFromText
+  if (mode === 'START_FRAME') return FLOW_BOQ_RPC.generateFromStartImage
+  return FLOW_BOQ_RPC.generateFromStartAndEndImage
+}
+
+export function modeForParams(params: FlowBridgeGenParams): FlowGenMode {
+  if (params.mode) return params.mode
+  // A lone first frame still rides `BatchAsyncGenerateVideoStartAndEndImage` (`nprQif`) with a
+  // null last frame: that is the route the REST twin exposes and the one the storyboard used, so
+  // it stays the default. `START_FRAME` (`eb1hJf`) is opt-in through `params.mode`.
+  if (params.firstFrameMediaId) return 'START_END_FRAMES'
+  return 'TEXT'
+}
+
+// ---------------------------------------------------------------------------------------------
+// response walking
+// ---------------------------------------------------------------------------------------------
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** First UUID anywhere in the payload — Flow media and operation ids are UUIDs. */
+function firstUuid(node: unknown, depth = 0): string | null {
+  if (depth > 8 || node == null) return null
+  if (typeof node === 'string') return UUID_RE.test(node) ? node : null
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const hit = firstUuid(item, depth + 1)
+      if (hit) return hit
+    }
+    return null
+  }
+  if (typeof node === 'object') {
+    for (const value of Object.values(node as Record<string, unknown>)) {
+      const hit = firstUuid(value, depth + 1)
+      if (hit) return hit
+    }
+  }
+  return null
+}
+
+/** Every id-looking string, deepest-first order preserved, de-duplicated. */
+function allUuids(node: unknown, out: string[] = [], depth = 0): string[] {
+  if (depth > 8 || node == null) return out
+  if (typeof node === 'string') {
+    if (UUID_RE.test(node) && !out.includes(node)) out.push(node)
+    return out
+  }
+  if (Array.isArray(node)) {
+    for (const item of node) allUuids(item, out, depth + 1)
+    return out
+  }
+  if (typeof node === 'object') {
+    for (const value of Object.values(node as Record<string, unknown>)) {
+      allUuids(value, out, depth + 1)
+    }
+  }
+  return out
+}
+
+/** Any http(s) URL in the payload — that is where Flow puts the produced MP4 (Fife). */
+function firstUrl(node: unknown, depth = 0): string | null {
+  if (depth > 10 || node == null) return null
+  if (typeof node === 'string') return /^https?:\/\//.test(node) ? node : null
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const hit = firstUrl(item, depth + 1)
+      if (hit) return hit
+    }
+    return null
+  }
+  if (typeof node === 'object') {
+    const obj = node as Record<string, unknown>
+    for (const [key, value] of Object.entries(obj)) {
+      if (typeof value === 'string' && /url|uri|fife|media/i.test(key) && /^https?:\/\//.test(value)) {
+        return value
+      }
+    }
+    for (const value of Object.values(obj)) {
+      const hit = firstUrl(value, depth + 1)
+      if (hit) return hit
+    }
+  }
+  return null
+}
+
+/** First long base64 blob in the payload (some responses inline the video). */
+function firstBase64(node: unknown, depth = 0): string | null {
+  if (depth > 10 || node == null) return null
+  if (typeof node === 'string') return node.length > 1000 && /^[A-Za-z0-9+/=]+$/.test(node) ? node : null
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const hit = firstBase64(item, depth + 1)
+      if (hit) return hit
+    }
+    return null
+  }
+  if (typeof node === 'object') {
+    for (const value of Object.values(node as Record<string, unknown>)) {
+      const hit = firstBase64(value, depth + 1)
+      if (hit) return hit
+    }
+  }
+  return null
+}
+
+const FAILED_STATUS = /fail|cancel|error|blocked|reject|unsafe/i
+const DONE_STATUS = /success|succeed|complete|done|ready/i
+
+/** Collect `{1: id, 3: status}` pairs out of the status RPC's field 3 list. */
+function walkStatusList(node: unknown, out: FlowBridgeStatusItem[], depth = 0): void {
+  if (depth > 8 || node == null || typeof node !== 'object') return
+  if (Array.isArray(node)) {
+    for (const item of node) walkStatusList(item, out, depth + 1)
+    return
+  }
+  const obj = node as Record<string, unknown>
+  const id = typeof obj['1'] === 'string' ? (obj['1'] as string) : undefined
+  const status = typeof obj['3'] === 'string' ? (obj['3'] as string) : undefined
+  if (id && status) {
+    out.push({
+      id,
+      status,
+      url: firstUrl(obj) ?? undefined,
+      base64: firstBase64(obj) ?? undefined,
+      done: DONE_STATUS.test(status),
+      failed: FAILED_STATUS.test(status)
+    })
+  }
+  for (const value of Object.values(obj)) walkStatusList(value, out, depth + 1)
+}
+
+function rpcErrorOf(res: FlowRpcResult): string | null {
+  for (const payload of res.payloads) {
+    if (payload && typeof payload === 'object' && 'error' in (payload as object)) {
+      const err = (payload as Record<string, unknown>).error
+      return typeof err === 'string' ? err : JSON.stringify(err)
+    }
+  }
+  return null
+}
+
+// ---------------------------------------------------------------------------------------------
+// project resolution
+// ---------------------------------------------------------------------------------------------
+
+/** Field 1 of a `_.hK` is the project id (`_.hK.mc()`), so prefer it, then any UUID. */
+function pickProjectId(payloads: unknown[]): string | null {
+  for (const payload of payloads) {
+    if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+      const first = (payload as Record<string, unknown>)['1']
+      if (typeof first === 'string' && first.length > 3) return first
+    }
+  }
+  return firstUuid(payloads)
+}
+
+/**
+ * The context message that both upload (`maseQ` field 1) and generation (request field 2) carry:
+ * field 2 is the enum flag the web client always sends (22), field 6 is the project id.
+ */
+export async function buildFlowContext(): Promise<Record<string, unknown>> {
+  return contextField(await ensureFlowProject())
+}
+
+export function getCachedFlowProjectId(): string | null {
+  return cachedProjectId
+}
+
+/**
+ * Reuse the account's first Flow project; create one only when the account has none. Result is
+ * cached for the process lifetime because the id is stable and unrelated to the job.
+ */
+export async function ensureFlowProject(force = false): Promise<string | null> {
+  if (cachedProjectId && !force) return cachedProjectId
+
+  const listed = await callFlowRpcAuto(FLOW_BOQ_RPC.getProjects, { 3: contextField(null) }, FLOW_ROUTE)
+  if (listed.stage === 'login' || listed.stage === 'wiz') return null
+  const existing = pickProjectId(listed.payloads)
+  if (existing) {
+    cachedProjectId = existing
+    debug('reusing Flow project', existing)
+    return existing
+  }
+
+  const created = await callFlowRpcAuto(
+    FLOW_BOQ_RPC.createProject,
+    { 2: { 2: { 1: 'ytlogidex' } }, 3: contextField(null) },
+    FLOW_ROUTE
+  )
+  const made = pickProjectId(created.payloads)
+  if (made) {
+    cachedProjectId = made
+    debug('created Flow project', made)
+    return made
+  }
+  debug('project resolution failed; sending context without a project id')
+  return null
+}
+
+// ---------------------------------------------------------------------------------------------
+// submit / poll / download
+// ---------------------------------------------------------------------------------------------
+
+export interface FlowBridgeSubmitResult {
+  mode: FlowGenMode
+  rpcId: string
+  /** Candidate ids for status polling. */
+  ids: string[]
+  raw: unknown
+  /** The exact envelope that was sent (for FLOW_DEBUG and for pinning the schema). */
+  request: unknown
+}
+
+/** Whether an RPC result proves the request reached Flow's backend. */
+function transportFailure(res: FlowRpcResult): string | null {
+  if (res.stage) return `sesi Flow belum siap (${res.stage}): ${res.error ?? 'tidak diketahui'}`
+  if (!res.ok) return `RPC ditolak (HTTP ${res.status}): ${res.raw.slice(0, 300)}`
+  return rpcErrorOf(res)
+}
+
+export async function submitBridgeGeneration(
+  params: FlowBridgeGenParams,
+  opts: { projectId?: string | null; count?: number } = {}
+): Promise<FlowBridgeSubmitResult> {
+  const mode = modeForParams(params)
+  const rpcId = rpcForMode(mode)
+  const projectId =
+    opts.projectId !== undefined ? opts.projectId : (params.projectId ?? (await ensureFlowProject()))
+
+  const request = buildGenerateRequest(mode, params, projectId ?? null, opts.count ?? 1)
+  debug('submit', rpcId, mode, JSON.stringify(request))
+
+  const res = await callFlowRpcAuto(rpcId, request, FLOW_ROUTE)
+  debug('submit reply', rpcId, res.status, res.stage ?? '', res.raw.slice(0, 800))
+
+  const failure = transportFailure(res)
+  if (failure) throw new Error(`Google Flow menolak permintaan generate: ${failure}`)
+
+  const ids = allUuids(res.payloads)
+  if (!ids.length) {
+    throw new Error(
+      'Flow membalas tanpa id media/operasi, jadi status tidak bisa dilacak. ' +
+        `Payload mentah: ${res.raw.slice(0, 600)}`
+    )
+  }
+  return { mode, rpcId, ids, raw: res.payloads, request }
+}
+
+/** `jwpduf`: request `{ 3: [ { 1: id }, … ] }`. */
+export async function pollBridgeStatus(ids: string[]): Promise<FlowBridgeStatus> {
+  if (!ids.length) return { items: [], raw: null }
+  const request = { 3: ids.map((id) => ({ 1: id })) }
+  const res = await callFlowRpcAuto(FLOW_BOQ_RPC.checkStatus, request, FLOW_ROUTE)
+
+  const failure = transportFailure(res)
+  if (failure) return { items: [], raw: res.payloads, error: failure }
+
+  const items: FlowBridgeStatusItem[] = []
+  walkStatusList(res.payloads, items)
+  if (!items.length) {
+    // Shape drift: fall back to a generic scan so a finished video is never missed.
+    for (const id of ids) {
+      items.push({
+        id,
+        url: firstUrl(res.payloads) ?? undefined,
+        base64: firstBase64(res.payloads) ?? undefined,
+        done: false,
+        failed: false
+      })
+    }
+  }
+  debug('status', JSON.stringify(items))
+  return { items, raw: res.payloads }
+}
+
+/** Download whatever the status reply points at, through the page session. */
+async function materialiseStatusItem(
+  item: FlowBridgeStatusItem
+): Promise<{ bytes: Buffer; contentType: string } | null> {
+  if (item.base64) {
+    return { bytes: Buffer.from(item.base64, 'base64'), contentType: 'video/mp4' }
+  }
+  if (!item.url) return null
+  const download = await downloadFlowMedia(item.url)
+  if (!download.ok || !download.bytes) {
+    throw new Error(`Gagal mengunduh hasil Flow: ${download.error ?? `HTTP ${download.status}`}`)
+  }
+  return { bytes: download.bytes, contentType: download.contentType || 'video/mp4' }
+}
+
+export interface FlowBridgeGenOptions {
+  timeoutMs?: number
+  pollMs?: number
+  signal?: AbortSignal
+  projectId?: string | null
+}
+
+/**
+ * End-to-end generation through the bridge: submit, poll `jwpduf` until a media URL shows up,
+ * then download it inside the page. Returns the same shape as `flow.generateVideo()` so callers
+ * do not care which transport ran.
+ */
+export async function generateVideoViaBridge(
+  params: FlowBridgeGenParams,
+  opts: FlowBridgeGenOptions = {}
+): Promise<{ bytes: Buffer; contentType: string }> {
+  const submitted = await submitBridgeGeneration(params, { projectId: opts.projectId })
+  debug('submitted', submitted.mode, submitted.rpcId, 'ids:', submitted.ids)
+
+  // Some replies already carry the finished media.
+  const immediateUrl = firstUrl(submitted.raw)
+  if (immediateUrl) {
+    const ready = await materialiseStatusItem({ url: immediateUrl, done: true, failed: false })
+    if (ready) return ready
+  }
+
+  const deadline = Date.now() + (opts.timeoutMs ?? 5 * 60 * 1000)
+  const pollMs = opts.pollMs ?? 4000
+  let last: FlowBridgeStatus | null = null
+
+  while (Date.now() < deadline) {
+    if (opts.signal?.aborted) throw new Error('Dibatalkan')
+    await sleep(pollMs, opts.signal)
+    last = await pollBridgeStatus(submitted.ids)
+
+    const finished = last.items.find((item) => (item.done || item.url || item.base64) && !item.failed)
+    if (finished) {
+      const media = await materialiseStatusItem(finished)
+      if (media) return media
+    }
+    const failed = last.items.find((item) => item.failed)
+    if (failed) {
+      throw new Error(`Google Flow gagal membuat video (status: ${failed.status ?? 'tidak diketahui'})`)
+    }
+  }
+
+  throw new Error(
+    `Google Flow tidak selesai dalam ${Math.round((opts.timeoutMs ?? 300000) / 1000)}s. ` +
+      `Respons terakhir: ${JSON.stringify(last?.raw ?? null).slice(0, 400)}`
+  )
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms)
+    if (signal) {
+      signal.addEventListener(
+        'abort',
+        () => {
+          clearTimeout(timer)
+          reject(new Error('Dibatalkan'))
+        },
+        { once: true }
+      )
+    }
+  })
+}
+
+/** Cheap liveness probe that also proves the generation surface is reachable. */
+export async function probeBridge(): Promise<FlowRpcResult> {
+  return await callFlowRpc(FLOW_BOQ_RPC.credits, {}, FLOW_ROUTE)
+}
+
+// keep `callFlowRpc`/`callFlowRpcAuto` referenced for tooling that greps the bundle markers
+export const FLOW_BOQ_ENDPOINT = 'https://labs.google/_/AiSandboxAngularFrontend/data/batchexecute'
+export { callFlowRpc, callFlowRpcAuto }
