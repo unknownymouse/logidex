@@ -39,7 +39,7 @@ const PAGE_PROBE_TIMEOUT_MS = 20_000
 const PAGE_RPC_TIMEOUT_MS = 180_000
 const PAGE_DOWNLOAD_TIMEOUT_MS = 180_000
 /** reCAPTCHA Enterprise issues a token in ~1s, but the widget script may still be loading. */
-const PAGE_RECAPTCHA_TIMEOUT_MS = 45_000
+const PAGE_RECAPTCHA_TIMEOUT_MS = 90_000
 /**
  * In-page fetch deadline. Deliberately *below* the executeJavaScript deadline so the page gives up
  * first: the failure then arrives as a readable result instead of a dead call we can only time out.
@@ -437,6 +437,16 @@ function rpcScript(rpcId: string, argsJson: string, sourcePath: string, atOverri
  * The action is part of the token, so it must be the same string the bundle uses: `VIDEO_GENERATION`
  * for generate, `UPLOAD_IMAGE` / `IMAGE_GENERATION` / `AUDIO_GENERATION` elsewhere.
  */
+/**
+ * Mint one reCAPTCHA Enterprise token, the way the Flow bundle mints it.
+ *
+ * `_.IS.initialize()` in `mod_XRV0Af.js` does not assume the page preloaded reCAPTCHA: it creates
+ * `https://www.google.com/recaptcha/enterprise.js?trustedtypes=true&render=<siteKey>`, appends it
+ * to `document.head` and waits for `onload` before calling `enterprise.ready()` / `execute()`.
+ * An idle bridge window never fires that code path, so `window.grecaptcha` simply does not exist
+ * and every token comes back empty — which the server answers exactly like a missing token.
+ * So inject it here, matching the bundle's URL and order.
+ */
 function recaptchaScript(action: string): string {
   return `(async () => {
   const ACTION = ${JSON.stringify(action)}
@@ -453,27 +463,73 @@ function recaptchaScript(action: string): string {
     return null
   }
 
-  try {
+  // Canonical key is WIZ_global_data.xZbWve. Fall back to any WIZ string shaped like a reCAPTCHA
+  // site key, then to the render= parameter of a script tag the app may already have injected.
+  function findSiteKey() {
     const wiz = findWiz()
-    const siteKey = wiz && typeof wiz.xZbWve === 'string' ? wiz.xZbWve : ''
-    if (!siteKey) {
-      return JSON.stringify({ ok: false, token: '', error: 'WIZ_global_data.xZbWve (site key reCAPTCHA) tidak ada' })
+    if (wiz) {
+      if (typeof wiz.xZbWve === 'string' && wiz.xZbWve) return wiz.xZbWve
+      for (const k of Object.getOwnPropertyNames(wiz)) {
+        try {
+          const v = wiz[k]
+          if (typeof v === 'string' && /^6L[A-Za-z0-9_-]{20,}$/.test(v)) return v
+        } catch (e) {}
+      }
     }
+    const tag = document.querySelector('script[src*="recaptcha/enterprise.js"]')
+    const m = tag && /[?&]render=([^&]+)/.exec(tag.getAttribute('src') || '')
+    return m ? m[1] : ''
+  }
+
+  function enterprise() {
     const g = window.grecaptcha
-    if (!g || !g.enterprise) {
-      return JSON.stringify({ ok: false, token: '', error: 'grecaptcha.enterprise belum dimuat di halaman' })
+    return g && g.enterprise && typeof g.enterprise.execute === 'function' ? g.enterprise : null
+  }
+
+  try {
+    const siteKey = findSiteKey()
+    if (!siteKey) {
+      const wiz = findWiz()
+      const keys = wiz ? Object.getOwnPropertyNames(wiz).join(',') : '(WIZ_global_data tidak ada di halaman)'
+      return JSON.stringify({ ok: false, token: '', error: 'site key tidak ketemu. kunci WIZ: ' + keys })
+    }
+
+    if (!enterprise()) {
+      await new Promise((resolve) => {
+        let settled = false
+        const fin = () => { if (!settled) { settled = true; resolve() } }
+        const existing = document.querySelector('script[src*="recaptcha/enterprise.js"]')
+        const script = existing || document.createElement('script')
+        if (!existing) {
+          script.src = 'https://www.google.com/recaptcha/enterprise.js?trustedtypes=true&render=' + encodeURIComponent(siteKey)
+          script.async = true
+          script.defer = true
+          document.head.appendChild(script)
+        }
+        script.addEventListener('load', fin)
+        script.addEventListener('error', fin)
+        setTimeout(fin, 20000)
+      })
+    }
+
+    const ent = enterprise()
+    if (!ent) {
+      return JSON.stringify({ ok: false, token: '', error: 'grecaptcha.enterprise tetap kosong setelah enterprise.js disuntik (site key ' + siteKey.slice(0, 8) + '...)' })
     }
 
     // The bundle waits for ready() before executing; a token asked for too early resolves to ''.
     await new Promise((resolve) => {
       let settled = false
       const fin = () => { if (!settled) { settled = true; resolve() } }
-      setTimeout(fin, 10000)
-      try { g.enterprise.ready(fin) } catch (e) { fin() }
+      setTimeout(fin, 15000)
+      try { ent.ready(fin) } catch (e) { fin() }
     })
 
-    const token = await g.enterprise.execute(siteKey, { action: ACTION })
-    return JSON.stringify({ ok: typeof token === 'string' && !!token, token: typeof token === 'string' ? token : '' })
+    const token = await ent.execute(siteKey, { action: ACTION })
+    if (typeof token !== 'string' || !token) {
+      return JSON.stringify({ ok: false, token: '', error: 'execute() kosong untuk action ' + ACTION })
+    }
+    return JSON.stringify({ ok: true, token: token })
   } catch (e) {
     return JSON.stringify({ ok: false, token: '', error: String(e) })
   }
