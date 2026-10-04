@@ -524,7 +524,11 @@ function transportFailure(res: FlowRpcResult): string | null {
  * The response is a nested message tree that changes between builds, so walk it for strings shaped
  * like a model key rather than hardcoding a field path.
  */
-const MODEL_KEY_RPCS = ['cPZSdc', 'gS5h8c', 'Yizz8d'] as const
+// `HTrJv` is the one that matters: `/FlowService.GetModels`, found next to `Zzl0ze` in the same
+// chunk. It takes an empty request (the SPA calls it as `fetch(M3a.nb(_.cu(new q3a)))`), so the
+// same empty-args call should answer with the account's model list. `yBhWQ`
+// (`/FlowService.ListModelStatuses`) is the per-account availability twin.
+const MODEL_KEY_RPCS = ['HTrJv', 'yBhWQ', 'cPZSdc', 'gS5h8c', 'Yizz8d'] as const
 
 let modelKeyCache: { at: number; keys: string[] } | null = null
 
@@ -533,7 +537,12 @@ function collectModelKeys(value: unknown, out: Set<string>): void {
     // Accept anything short and key-like that mentions "veo", not just the documented `veo_*` shape:
     // the naming has changed between builds, and a silent miss here falls back to a default that may
     // be the wrong modality entirely.
-    if (value.length <= 60 && /^[A-Za-z0-9_]+$/.test(value) && /veo/i.test(value)) out.add(value)
+    // Not just `veo_*`: this build also ships Omni / Nano Banana models and a frames-to-video mode,
+    // so a filter that only knows the old prefix silently misses the key that would have worked.
+    if (value.length <= 60 && /^[A-Za-z0-9_]+$/.test(value) &&
+      /veo|omni|nano|banana|_fast|_lite|_pro|_2v/i.test(value)) {
+      out.add(value)
+    }
     return
   }
   if (Array.isArray(value)) {
@@ -563,7 +572,7 @@ export async function fetchFlowModelKeys(force = false): Promise<string[]> {
         rpcId,
         found ? `${found} baru` : 'KOSONG',
         `status=${res.status}`,
-        found ? '' : res.raw.slice(0, 400)
+        found ? '' : res.raw.slice(0, 1200)
       )
       if (keys.size) break
     } catch (e) {
@@ -584,9 +593,11 @@ export function pickFlowModelKey(keys: string[], params: FlowBridgeGenParams): s
   if (!keys.length) return ''
   const wantsImage = !!params.firstFrameMediaId
   const rank = (key: string): [number, number] => {
-    const i2v = /i2v/i.test(key)
+    // A first frame means the model has to accept frames: `f2v` (frames-to-video) or `i2v`
+    // (image-to-video). A `t2v` key on that request is the argument error this file keeps hitting.
+    const acceptsFrames = /f2v|i2v/i.test(key)
     const t2v = /t2v/i.test(key)
-    const fit = wantsImage ? (i2v ? 0 : t2v ? 2 : 1) : t2v ? 0 : 1
+    const fit = wantsImage ? (acceptsFrames ? 0 : t2v ? 2 : 1) : t2v ? 0 : 1
     return [fit, key.includes('fast') ? 0 : 1]
   }
   return [...keys].sort((a, b) => {
