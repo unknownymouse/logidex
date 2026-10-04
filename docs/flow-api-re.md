@@ -243,6 +243,38 @@ needs.
 **Conclusion:** with an OAuth 2 Bearer token, Flow is **text-to-video only**. Full
 image-to-video needs a logged-in Flow browser session. The app could obtain one by opening
 its own `BrowserWindow` on `labs.google/fx/tools/flow` and reading the session cookies
-(`SAPISIDHASH`) — that is a design decision, not a code detail, and is deliberately not
-implemented.
+(`SAPISIDHASH`) — that is a design decision, not a code detail, and is now implemented — see §7.
+
+## 7. The cookie bridge (implementation)
+
+`src/main/services/flowSession.ts` + `flowUpload.ts` implement the only route that can mint a
+media id:
+
+1. A hidden `BrowserWindow` (partition `persist:flow-bridge`, so the login survives restarts)
+   loads `https://labs.google/fx/tools/flow`.
+2. Per-session scalars are harvested from the live page instead of hardcoded — `eptZe` (RPC base
+   path), `cfb2h` (build label), `FdrFJe` (`f.sid`). They are opaque ids that change between
+   builds, so pinning them by name is how this kind of bridge rots.
+3. Each call runs **inside the page** via `executeJavaScript`, so same-origin cookies, `Origin`
+   and the framework XSRF token behave exactly as they do for the real client. No hand-rolled
+   `SAPISIDHASH`, and no `at` token — this build does not use one (`xZbWve` turned out to be a
+   reCAPTCHA site key, not an XSRF token).
+4. `uploadImageToFlow()` sends `maseQ` with the positional field map from §6, then extracts the
+   media id from the response.
+5. Generation stays on the **OAuth REST** route
+   (`/v1/video:batchAsyncGenerateVideoStartAndEndImage`) with `firstFrame: { mediaId }`. The split
+   is deliberate: the REST surface can *consume* a media id but cannot *mint* one.
+
+Login is lazy — the first image-to-video job opens the window, waits for Google, then continues
+the job it was asked to do. `FLOW_DEBUG=1` dumps every RPC id, its HTTP status and the first 4 kB
+of the raw response.
+
+### Verified vs. not verified
+
+Verified offline: the endpoint, the `f.req` envelope, the auth model, the `maseQ` field map, the
+`Media`-id extraction, and that the whole chain typechecks and bundles.
+
+Needs one live run: the per-session scalar harvest and the media-id position inside the upload
+response. Run an image-to-video job with `FLOW_DEBUG=1`; the raw dump names the offending step
+immediately.
 
