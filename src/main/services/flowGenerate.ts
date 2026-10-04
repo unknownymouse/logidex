@@ -89,6 +89,7 @@ import {
   callFlowRpcAuto,
   downloadFlowMedia,
   getFlowRecaptchaToken,
+  dumpCapturedRequests,
   FLOW_ROUTE,
   type FlowRpcResult
 } from './flowSession'
@@ -657,6 +658,10 @@ export async function submitBridgeGeneration(
 
   const ids = allUuids(res.payloads)
   if (!ids.length) {
+    // Before reporting, fold in whatever the web client itself sent. If the account holder has
+    // opened the Flow window at all, this is the request shape the server accepts — the one
+    // measurement that ends the guesswork.
+    await dumpCapturedRequests()
     throw new Error(
       'Flow membalas tanpa id media/operasi, jadi status tidak bisa dilacak. ' +
         `reCAPTCHA: ${recaptcha.note}. ` +
