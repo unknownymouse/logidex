@@ -515,6 +515,78 @@ function transportFailure(res: FlowRpcResult): string | null {
   return rpcErrorOf(res)
 }
 
+/**
+ * Flow decides which video models an account may use and hands the list to the web client through
+ * `cPZSdc` (`/VideoFxService.GetFlowAppConfig`). The repo's `veo_3_1_t2v_fast` default is therefore
+ * a *guess*, and a wrong key is answered exactly like a missing one (INVALID_ARGUMENT, null payload)
+ * — the failure mode this whole file keeps tripping over. Ask Flow instead of guessing.
+ *
+ * The response is a nested message tree that changes between builds, so walk it for strings shaped
+ * like a model key rather than hardcoding a field path.
+ */
+const MODEL_KEY_RPCS = ['cPZSdc', 'gS5h8c', 'Yizz8d'] as const
+
+let modelKeyCache: { at: number; keys: string[] } | null = null
+
+function collectModelKeys(value: unknown, out: Set<string>): void {
+  if (typeof value === 'string') {
+    if (/^veo_[a-z0-9_]+$/.test(value)) out.add(value)
+    return
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectModelKeys(item, out)
+    return
+  }
+  if (value && typeof value === 'object') {
+    for (const item of Object.values(value as Record<string, unknown>)) collectModelKeys(item, out)
+  }
+}
+
+/** Video model keys advertised for this account, cached for half an hour. Empty array = unknown. */
+export async function fetchFlowModelKeys(force = false): Promise<string[]> {
+  if (!force && modelKeyCache && Date.now() - modelKeyCache.at < 30 * 60_000) return modelKeyCache.keys
+  const keys = new Set<string>()
+  for (const rpcId of MODEL_KEY_RPCS) {
+    try {
+      const res = await callFlowRpcAuto(rpcId, {}, FLOW_ROUTE)
+      let found = 0
+      for (const payload of res.payloads) {
+        const before = keys.size
+        collectModelKeys(payload, keys)
+        found += keys.size - before
+      }
+      debug('model keys', rpcId, found ? `${found} baru` : 'kosong')
+      if (keys.size) break
+    } catch (e) {
+      debug('model keys', rpcId, 'gagal:', e instanceof Error ? e.message : String(e))
+    }
+  }
+  const list = [...keys].sort()
+  modelKeyCache = { at: Date.now(), keys: list }
+  return list
+}
+
+/**
+ * The key that matches the request. A first frame means the video is generated *from an image*, and
+ * Flow serves that with an `i2v` model; text has to stay `t2v`. Sending a text-to-video key together
+ * with a frame is an argument error, not a fallback.
+ */
+export function pickFlowModelKey(keys: string[], params: FlowBridgeGenParams): string {
+  if (!keys.length) return ''
+  const wantsImage = !!params.firstFrameMediaId
+  const rank = (key: string): [number, number] => {
+    const i2v = /(^|_)i2v(_|$)/.test(key)
+    const t2v = /(^|_)t2v(_|$)/.test(key)
+    const fit = wantsImage ? (i2v ? 0 : t2v ? 2 : 1) : t2v ? 0 : 1
+    return [fit, key.includes('fast') ? 0 : 1]
+  }
+  return [...keys].sort((a, b) => {
+    const [fa, sa] = rank(a)
+    const [fb, sb] = rank(b)
+    return fa - fb || sa - sb || a.localeCompare(b)
+  })[0]
+}
+
 export async function submitBridgeGeneration(
   params: FlowBridgeGenParams,
   opts: { projectId?: string | null; count?: number } = {}
@@ -527,7 +599,13 @@ export async function submitBridgeGeneration(
   // Generation is reCAPTCHA-gated. The token carries the action, so it has to be minted per RPC.
   const recaptchaToken = await getFlowRecaptchaToken('VIDEO_GENERATION')
 
-  const request = buildGenerateRequest(mode, params, projectId ?? null, opts.count ?? 1, recaptchaToken)
+  // An explicit key still wins; otherwise ask Flow which models this account has and match the
+  // key to the mode. A t2v key on an image-to-video request is an argument error, not a fallback.
+  const resolvedKey = params.modelKey || pickFlowModelKey(await fetchFlowModelKeys(), params)
+  const effectiveParams = resolvedKey && resolvedKey !== params.modelKey ? { ...params, modelKey: resolvedKey } : params
+  debug('generate', mode, rpcId, 'modelKey=', resolvedKey || DEFAULT_FLOW_MODEL_KEY)
+
+  const request = buildGenerateRequest(mode, effectiveParams, projectId ?? null, opts.count ?? 1, recaptchaToken)
   debug('submit', rpcId, mode, recaptchaToken ? 'recaptcha=ok' : 'recaptcha=MISSING', JSON.stringify(request))
 
   const res = await callFlowRpcAuto(rpcId, request, FLOW_ROUTE)
