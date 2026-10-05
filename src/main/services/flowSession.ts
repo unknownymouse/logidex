@@ -411,12 +411,16 @@ async function ensureFlowLoaded(show: boolean): Promise<BrowserWindow> {
 /**
  * Runs inside the page. Finds `WIZ_global_data`, derives the per-session scalars, posts the
  * batchexecute request with same-origin credentials, then unpacks the anti-XSSI envelope.
+ *
+ * If `authToken` is provided, an `Authorization: Bearer <token>` header is added to the request,
+ * allowing Google OAuth access tokens to authenticate Flow API calls in addition to session cookies.
  */
-function rpcScript(rpcId: string, argsJson: string, sourcePath: string, atOverride = ''): string {
+function rpcScript(rpcId: string, argsJson: string, sourcePath: string, atOverride = '', authToken = ''): string {
   return `(async () => {
   const RPC_ID = ${JSON.stringify(rpcId)}
   const ARGS = ${JSON.stringify(argsJson)}
   const SOURCE = ${JSON.stringify(sourcePath)}
+  const AUTH_TOKEN = ${JSON.stringify(authToken)}
 
   function findWiz() {
     const direct = window.WIZ_global_data
@@ -476,12 +480,19 @@ function rpcScript(rpcId: string, argsJson: string, sourcePath: string, atOverri
   const timer = setTimeout(() => ctrl.abort(), ${RPC_FETCH_TIMEOUT_MS})
   let res, text
   try {
+    const fetchHeaders: Record<string, string> = {
+      'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'
+    }
+    // Add OAuth Bearer token if provided (in addition to session cookies)
+    if (AUTH_TOKEN) {
+      fetchHeaders['Authorization'] = 'Bearer ' + AUTH_TOKEN
+    }
     res = await fetch(base + 'data/batchexecute?' + qs.toString(), {
       method: 'POST',
       credentials: 'include',
       body: body,
       signal: ctrl.signal,
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }
+      headers: fetchHeaders
     })
     text = await res.text()
   } catch (e) {
@@ -756,10 +767,10 @@ export async function callFlowRpc(
   rpcId: string,
   args: unknown,
   sourcePath = FLOW_ROUTE,
-  opts: { argStyle?: FlowArgStyle; atOverride?: string } = {}
+  opts: { argStyle?: FlowArgStyle; atOverride?: string; authToken?: string } = {}
 ): Promise<FlowRpcResult> {
   const payload = opts.argStyle === 'array' ? toPositionalArgs(args) : args
-  const script = rpcScript(rpcId, JSON.stringify(payload ?? []), sourcePath, opts.atOverride ?? cachedAt)
+  const script = rpcScript(rpcId, JSON.stringify(payload ?? []), sourcePath, opts.atOverride ?? cachedAt, opts.authToken ?? '')
 
   const attempt = async (): Promise<string> => {
     const target = await ensureFlowLoaded(false)

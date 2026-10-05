@@ -714,6 +714,7 @@ export interface FlowBridgeGenOptions {
   pollMs?: number
   signal?: AbortSignal
   projectId?: string | null
+  authToken?: string
 }
 
 /**

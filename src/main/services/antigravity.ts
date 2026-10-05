@@ -518,13 +518,17 @@ export async function generateVideo(
   // Single-login: the cookie bridge carries upload *and* generation, so signing into Flow once
   // (in the bridge window) covers the whole job. The REST route stays behind it as a fallback,
   // so a machine without a bridge session never regresses. docs/flow-api-re.md §8
-    let bridgeError: string | null = null
+  let bridgeError: string | null = null
+
+  // Get OAuth token for Flow bridge - this enables using Google OAuth instead of just cookies
+  const oauthToken = token || undefined
+
   const viaBridge = async (firstFrameMediaId?: string) => {
     try {
       return await withTimeout(
         flowGenerate.generateVideoViaBridge(
           { prompt, modelKey: wireModel, aspectRatio: flowAspect, firstFrameMediaId },
-          { signal }
+          { signal, authToken: oauthToken }
         ),
         FLOW_BRIDGE_BUDGET_MS,
         'Membuat video lewat sesi Flow'
