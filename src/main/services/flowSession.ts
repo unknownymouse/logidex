@@ -1070,7 +1070,8 @@ export async function openFlowLogin(): Promise<{ ok: boolean; message: string }>
       }
       if (res && res.stage !== 'wiz' && res.stage !== 'login' && res.stage !== 'timeout' && res.stage !== 'fetch') {
         // Login successful: hide the window but keep session cookies alive
-        target.hide()
+        // Only hide if window exists and is not already destroyed
+        if (!target.isDestroyed()) target.hide()
         return { ok: true, message: 'Google Flow terhubung' }
       }
       if (res) {
