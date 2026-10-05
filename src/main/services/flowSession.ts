@@ -390,6 +390,7 @@ async function ensureFlowLoaded(show: boolean): Promise<BrowserWindow> {
   // only an empty window triggers a navigation.
   const existing = await probe(target)
   if (existing && existing.nodes > 0 && existing.readyState !== 'loading') {
+    void installRequestCapture()
     // Logged once per distinct URL: this fires on every single RPC, and the repetition is what
     // pushed the lines that matter out of the error's log tail.
     if (existing.url !== lastLoggedPage) {
@@ -730,6 +731,98 @@ export async function getFlowRecaptchaToken(action: string): Promise<FlowRecaptc
     const note = 'exception: ' + (e instanceof Error ? e.message : String(e))
     debug(`reCAPTCHA ${action} GAGAL`, note)
     return { token: '', note }
+  }
+}
+
+/**
+ * Runs in the page: record every `batchexecute` request the **web client itself** makes.
+ *
+ * Six rounds of guessing at the request shape have not converged, and the reason is that the only
+ * ground truth is what the SPA sends when a human drives it. Patching fetch and XHR is the cheap
+ * way to read that off: the SPA is Angular, so the transport is XHR, and the interceptor keeps a
+ * short ring buffer that `dumpCapturedRequests()` folds into the bridge log. A captured generate
+ * call can then be diffed against ours field by field instead of inferred from a bundle.
+ * Defensive on purpose — a broken interceptor would break the very page it observes.
+ */
+function captureScript(): string {
+  return `(() => {
+  if (window.__flowCaptured) return 'sudah terpasang'
+  window.__flowCaptured = []
+  const push = function (url, body) {
+    try {
+      if (!url || String(url).indexOf('batchexecute') === -1) return
+      window.__flowCaptured.push({
+        at: Date.now(),
+        url: String(url).slice(0, 1500),
+        body: String(body == null ? '' : body).slice(0, 4000)
+      })
+      while (window.__flowCaptured.length > 8) window.__flowCaptured.shift()
+    } catch (e) {}
+  }
+  try {
+    const origFetch = window.fetch
+    if (typeof origFetch === 'function') {
+      window.fetch = function (input, init) {
+        try {
+          const url = typeof input === 'string' ? input : ((input && input.url) || '')
+          push(url, init && init.body)
+        } catch (e) {}
+        return origFetch.apply(this, arguments)
+      }
+    }
+  } catch (e) {}
+  try {
+    const origOpen = XMLHttpRequest.prototype.open
+    const origSend = XMLHttpRequest.prototype.send
+    XMLHttpRequest.prototype.open = function (method, url) {
+      try { this.__flowUrl = String(url == null ? '' : url) } catch (e) {}
+      return origOpen.apply(this, arguments)
+    }
+    XMLHttpRequest.prototype.send = function (body) {
+      try { push(this.__flowUrl, body) } catch (e) {}
+      return origSend.apply(this, arguments)
+    }
+  } catch (e) {}
+  return 'terpasang'
+})()`
+}
+
+/** Idempotent; safe to call on every page reuse. */
+export async function installRequestCapture(): Promise<void> {
+  try {
+    const target = await ensureFlowLoaded(false)
+    const res = await execInPage(target, captureScript(), 20_000, 'pasang perekam request')
+    debug('perekam request Flow:', String(res))
+  } catch (e) {
+    debug('gagal memasang perekam request:', e instanceof Error ? e.message : String(e))
+  }
+}
+
+/**
+ * Fold what the web client sent into the log. Called on a failed generation: if the account holder
+ * has used the Flow window at all, this is the exact request shape the server accepts, and the
+ * comparison stops being a guess.
+ */
+export async function dumpCapturedRequests(): Promise<void> {
+  try {
+    const target = await ensureFlowLoaded(false)
+    const raw = await execInPage(
+      target,
+      'JSON.stringify((window.__flowCaptured || []).slice(-4))',
+      20_000,
+      'baca perekam request'
+    )
+    const list = JSON.parse(raw) as { url: string; body: string }[]
+    if (!list.length) {
+      debug('perekam request kosong: web client belum memanggil batchexecute sejak perekam dipasang')
+      return
+    }
+    for (const item of list) {
+      debug('CLIENT url:', item.url)
+      debug('CLIENT body:', item.body)
+    }
+  } catch (e) {
+    debug('gagal membaca perekam request:', e instanceof Error ? e.message : String(e))
   }
 }
 
