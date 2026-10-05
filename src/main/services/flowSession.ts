@@ -1065,18 +1065,17 @@ export async function openFlowLogin(): Promise<{ ok: boolean; message: string }>
       try {
         res = await callFlowRpc('nzlxg', [], FLOW_ROUTE)
       } catch (e) {
-        // A throw here used to end the whole login wait. Keep waiting: the user may still be typing.
         last = e instanceof Error ? e.message : String(e)
         debug('cek sesi gagal:', last)
       }
       if (res && res.stage !== 'wiz' && res.stage !== 'login' && res.stage !== 'timeout' && res.stage !== 'fetch') {
+        // Login successful: hide the window but keep session cookies alive
         target.hide()
         return { ok: true, message: 'Google Flow terhubung' }
       }
       if (res) {
         last = res.error ?? ''
         if (res.stage === 'timeout') {
-          // The user is looking straight at this window; hand them a fresh page, not a wedge.
           debug('halaman tidak merespons saat menunggu login, reload')
           try {
             await target.webContents.reload()
