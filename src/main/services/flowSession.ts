@@ -1034,13 +1034,18 @@ export async function getFlowSessionStatus(): Promise<FlowSessionStatus> {
   if (!win || win.isDestroyed()) return { open: false, loggedIn: false }
   try {
     const res = await callFlowRpc('nzlxg', [], FLOW_ROUTE)
-    // Only a definite answer counts as a live session. The old `!(login || wiz)` test reported a
-    // stalled page ('timeout'/'fetch') as logged in, which skipped the sign-in prompt the user
-    // actually needed — and the job then died much later with a far less useful message.
-    const unusable =
-      res.stage === 'wiz' || res.stage === 'login' || res.stage === 'timeout' || res.stage === 'fetch'
-    return { open: true, loggedIn: !unusable }
-  } catch {
+    // Stage 'ok' with payloads = logged in with valid session and can make requests
+    if (res.stage === 'ok' && res.payloads && res.payloads.length > 0) {
+      return { open: true, loggedIn: true }
+    }
+    // Stages wiz/login = still waiting for user to sign in / page to initialize
+    if (res.stage === 'wiz' || res.stage === 'login') {
+      return { open: true, loggedIn: false }
+    }
+    // timeout/fetch/error = session not usable
+    return { open: true, loggedIn: false }
+  } catch (e) {
+    // Jika error tiba-tiba (window tertutup, dll), jangan anggap logged in
     return { open: true, loggedIn: false }
   }
 }
