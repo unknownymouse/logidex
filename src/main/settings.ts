@@ -16,7 +16,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   antigravityImageModel: 'imagen-3.0-generate-002',
   antigravityVideoModel: 'veo-2.0-generate-001',
   defaultImageProvider: 'higgsfield',
-  defaultVideoProvider: 'higgsfield',
+  defaultVideoProvider: 'antigravity',
   imageModel: DEFAULT_IMAGE_MODEL,
   videoModel: DEFAULT_VIDEO_MODEL,
   whisperAuto: true
